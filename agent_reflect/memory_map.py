@@ -34,7 +34,9 @@ class Picture:
     days: int
     orphans: int  # user files no MEMORY.md line links to
     dead: int  # files MEMORY.md links to that are not in the folder
-    hooked: int  # live lessons with a command or a path pattern for the hook
+    hooked: int  # live lessons with a pattern for the hook: over a command, a path or an error text
+    blocking: int  # live lessons the user made the hook refuse a matching command for (`guard block`)
+    facts: int  # live lessons that are facts about the project, which go stale
     waiting: int
     live: int
     retired: int
@@ -87,7 +89,9 @@ def picture(cfg: Config, lessons: dict[str, Lesson], memory_dir: str, project: s
     return Picture(
         project=project, user_lines=user_lines, lesson_lines=lesson_lines, user_files=len(user_files),
         unread=unread, days=days, orphans=len(user_files - linked), dead=len(linked - on_disk),
-        hooked=sum(1 for lesson in mine if lesson.status == "live" and (lesson.trigger or lesson.path_trigger)),
+        hooked=sum(1 for lesson in mine if lesson.status == "live" and lesson.patterns()),
+        blocking=sum(1 for lesson in mine if lesson.status == "live" and lesson.block),
+        facts=sum(1 for lesson in mine if lesson.status == "live" and lesson.kind == "fact"),
         waiting=status.count("staged"), live=status.count("live"), retired=status.count("retired"),
         promoted=status.count("promoted"), removed=status.count("removed"), rejected=status.count("rejected"),
         owned=status.count("user_owned"),
@@ -120,6 +124,10 @@ def _structure(p: Picture, cap: int) -> list[str]:
     right = [t(f"{p.lesson_lines} auto_*.md in the index", f"{p.lesson_lines} auto_*.md в индексе"),
              t(f"{p.hooked} with a hook pattern", f"{p.hooked} с шаблоном для хука"),
              t(f"{p.live - p.hooked} without one", f"{p.live - p.hooked} без шаблона")]
+    if p.blocking:
+        right.append(t(f"of them blocking a command: {p.blocking}", f"из них блокируют команду: {p.blocking}"))
+    if p.facts:
+        right.append(t(f"of them facts: {p.facts}", f"из них фактов: {p.facts}"))
     width_left = max(chart.columns(text) for text in (in_box[0], *left)) + _GAP
     caption = "─ MEMORY.md · " + t("every session loads it whole", "каждая сессия загружает его целиком") + " "
     inner = max(width_left + max(chart.columns(text) for text in (in_box[1], *right)), chart.columns(caption))
@@ -178,8 +186,10 @@ def _path(p: Picture) -> list[str]:
     aside = [(t("retired", "снят"), p.retired), (t("tidied away", "убран чисткой"), p.removed),
              (t("rejected by you", "отклонён тобой"), p.rejected), (t("yours now", "стал твоим"), p.owned)]
     out.append("  " + t("aside: ", "в стороне: ") + " · ".join(f"{name} {n}" for name, n in aside))
-    out.append("  " + t("back to waiting: MEMORY.md over its limits · a retired lesson happens again",
-                        "обратно в «ждёт»: MEMORY.md переполнен · снятый урок повторился"))
+    back = t("back to waiting: ", "обратно в «ждёт»: ")
+    out += ["  " + back + t("· MEMORY.md over its limits, except a lesson that blocks a command",
+                            "· MEMORY.md переполнен, кроме урока, который блокирует команду"),
+            "  " + " " * chart.columns(back) + t("· a retired lesson happens again", "· снятый урок повторился")]
     return out
 
 

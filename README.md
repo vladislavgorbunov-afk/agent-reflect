@@ -23,11 +23,11 @@ agent-reflect does that bookkeeping. It reads what your sessions did, writes the
 flowchart LR
     T[("Session<br/>transcripts")]
 
-    subgraph N["Every night · Claude Sonnet"]
+    subgraph N["Every night"]
         direction TB
         N1["Read the parts not read yet"] --> N2["Keep the moments: a failure, a hook block,<br/>your correction or interruption, a recovery"]
-        N2 --> N3["The model decides: nothing, a new lesson,<br/>a repeat, a lesson broken, your rule broken"]
-        N3 --> N4["Write only what passes: the quote is in<br/>the transcript, a second call agrees,<br/>concrete, not rejected before"]
+        N2 --> N3["Claude Sonnet decides: nothing, a new lesson,<br/>a repeat, a lesson broken, your rule broken"]
+        N3 --> N4["Write only what passes: the quote is in<br/>the transcript, Claude Opus agrees,<br/>concrete, not rejected before"]
     end
 
     subgraph M["Read by Claude Code"]
@@ -39,7 +39,7 @@ flowchart LR
     subgraph S["Every session"]
         direction TB
         S1["Loads MEMORY.md at start"]
-        S2["The PreToolUse hook shows a lesson<br/>at a matching command or file"]
+        S2["The hook shows a lesson at a matching<br/>command or file, or right after a matching error;<br/>it refuses a command only for a lesson you blocked"]
     end
 
     subgraph W["Once a week · Claude Opus"]
@@ -83,28 +83,33 @@ A part of a session with none of these never reaches the model. A subagent part 
 **Checks before writing anything.**
 
 - A lesson quotes the transcript, and the quote must be found there.
-- A second model call reads the same part and must agree that the lesson follows from it.
+- A second model call, on another model (Claude Opus), reads the same part and must agree that the lesson follows from it: two samples of one model tend to agree for the same wrong reason.
 - A lesson about how to work, as opposed to how to use a tool, must quote you.
 - A lesson too vague to act on ("be more careful with hooks") is dropped, and so is one you rejected before.
 
+**Three kinds of lessons.** How to use a tool, how to work (read from your corrections), and a fact about the project the session paid to find out (what is generated, which stand or branch is the right one). A fact comes with how to check it again, since facts go stale.
+
 **Writes it where Claude Code reads it.** The lesson becomes `auto_<id>.md` in that project's memory folder: when it applies, what to do, why, and the evidence. It gets a line in `MEMORY.md`, the index every session loads, only when it is high-confidence or has happened twice; the rest wait for a second case. `MEMORY.md` is kept within the limits Claude Code reads (characters, bytes, lines), with at most 40 lines of agent-reflect's own.
 
-**Gives the lesson a trigger.** For a lesson about a command, the model proposes a regex for it; for one about a file, a regex for its path. A command trigger is kept only if it matches the command that failed and not the one that worked.
+**Gives the lesson a trigger.** For a lesson about a command, the model proposes a regex for it; for one about a file, a regex for its path; for a mistake its command does not show (`git push` rejected, where the fix is a pull before the push), a regex for the error text. A command trigger is kept only if it matches the command that failed and not the one that worked; an error trigger only if it matches that failure's output, not the output of the command that worked, and not text every failure prints (`error`, `Exit code 1`, `Traceback`).
 
-**Reports the night.** `reports/<date>.md` and a notification: what changed in memory, what needs you (your rule broken again, a note that looks out of date, an error), what was reviewed, how much work you sent back, silent failures, and what the model calls cost.
+**Reports the night.** `reports/<date>.md` and a notification: what changed in memory (each lesson's card names the patterns the hook matches it by, a fact's way to recheck it, a command the hook refused by it, and a moved lesson whose mistake came back), what needs you (your rule broken again, a note that looks out of date, an error), what was reviewed, how much work you sent back, silent failures, and what the model calls cost.
 
 ### While you work
 
-A `PreToolUse` hook on Bash, Edit, Write and NotebookEdit. When a command matches a live lesson's trigger, the agent sees the lesson right there, next to the command. When it starts editing a matching file, it sees the lesson once per session. You can add rules of your own the same way (`agent-reflect guard add`), for every project or for one.
+A hook before Bash, Edit, Write and NotebookEdit, and after Bash. When a command matches a live lesson's trigger, the agent sees the lesson right there, next to the command. When it starts editing a matching file, it sees the lesson once per session. When a shell command fails with an error that matches a lesson's error trigger, the agent sees the lesson right after it, once per session. A command the tool did not mark as failed is read only when its output shows a failure the way the nightly run sees one (`Exit code 1`, a traceback, `command not found`), and never when it only prints files or history (`cat`, `grep`, `git log`). The after-Bash hook starts at all only while some lesson has an error trigger. You can add rules of your own the same way (`agent-reflect guard add`), for every project or for one.
 
-The hook never blocks anything: it reminds. Every showing is counted, so the digest can tell which lessons are used and which only take up room.
+The hook reminds; it blocks only what you told it to. A lesson the agent broke in two sessions by a command run after the hook had already shown it there (the hook's text reaches the agent with the result of the command it fired on, so the first such command never counts) is named in the digest, and `agent-reflect guard block <id>` makes the hook refuse a command its trigger matches, with the lesson as the reason, until the agent rewrites the command (`guard unblock` lifts it). agent-reflect never turns this on by itself. Run from a Claude Code shell (`CLAUDECODE=1`), it refuses `guard block` and `guard unblock`, and every other way to take a blocking lesson away (`guard set` or `unset` on it, `retire` of it, `guard off` or `uninstall` while one blocks): you run those in your own terminal. That stops the obvious ways, not an agent set on getting around it. The weekly run never removes a blocking lesson or merges it into another. Every showing is counted, so the digest can tell which lessons are used and which only take up room.
+
+After an update that adds hook events, run `agent-reflect guard on` once to add them to `~/.claude/settings.json`.
 
 ### Once a week
 
-- **Moves proven lessons into skills.** A lesson confirmed in at least two sessions within 30 days, or broken twice while it sat in memory, is written into the skill or `CLAUDE.md` where it belongs. Claude Opus picks the place and the edit. Personal skills in `~/.claude/skills` are edited in place with a backup; skills and `CLAUDE.md` in the repositories you list get a draft PR, never a direct commit. An edit that reads like an incident log (dates, PR numbers, ticket keys, session ids) is refused: a skill keeps rules, not history.
-- **Tidies memory.** Merges lessons that say the same thing and removes ones that no longer hold, at most a quarter of the lessons per run. For memory entries you wrote yourself it only suggests changes.
+- **Moves proven lessons into skills.** A lesson confirmed in at least two sessions within 30 days, or broken twice while it sat in memory, is written into the skill or `CLAUDE.md` where it belongs. Claude Opus picks the place and the edit. Personal skills in `~/.claude/skills` are edited in place with a backup; skills and `CLAUDE.md` in the repositories you list get a draft PR, never a direct commit. An edit that reads like an incident log (dates, PR numbers, ticket keys, session ids) is refused: a skill keeps rules, not history. A project's `CLAUDE.md`, which every session loads whole, may grow by one line per edit at most: a rule that goes in takes the place of one it covers.
+- **Checks that the move helped.** A moved lesson leaves memory but is still watched from that moment, while its PR waits too: its triggers, and the model, which sees it marked as moved, count every session that made its mistake again. 30 days after the move took effect (at once for a personal skill, at GitHub's merge time for a PR) it gets a verdict on the sessions started since then: cannot tell (another move, of lessons or of your notes, changed the same file in those weeks), did not help (the mistake came back), too little data (it did not, but it was in fewer than two sessions before either), or helped. A comeback inside the 30 days is reported at once; a move undone with `agent-reflect rollback`, or made after the run rolled back into the same file, is no longer checked.
+- **Tidies memory.** Merges lessons that say the same thing and removes ones that no longer hold, at most a quarter of the lessons per run. The model sees each lesson's numbers (repeats, sessions in 30 days, violations, reads, hook showings) and names them in its reason. For memory entries you wrote yourself it only suggests changes.
 - **Learns from repeated corrections.** Groups your corrections from the last 30 days. Three or more of one kind from at least two sessions become a lesson about how to work, at most two per project a week.
-- **Looks after the lessons.** Names lessons that sat in the index for 30 days with no reads, hook showings or repeats (`agent-reflect retire` takes the line out and keeps the file), and lessons the agent keeps breaking that still have no trigger.
+- **Looks after the lessons.** Names lessons that sat in the index for 30 days with no reads, hook showings or repeats (`agent-reflect retire` takes the line out and keeps the file), lessons the agent keeps breaking that still have no trigger, lessons broken twice although the hook showed them (`guard block`), and facts no session confirmed for 30 days, with how to check them (`agent-reflect confirm <id>` when one still holds).
 - **Writes the digest.** `digests/<week>.md` and a notification: new and broken lessons, what moved into skills, the PRs, work sent back per 100 replies next to the baseline, a map of each project's memory (see [Memory](#memory)), memory files no agent opened in 30 days, silent failures, cost.
 
 ### Silent failures
@@ -139,17 +144,21 @@ flowchart LR
         BACKUPS["backups/<br/>memory and skill edits, for rollback"]
     end
 
-    RULES["~/.claude/agent-reflect/guard-rules.json<br/>patterns of lessons in the index or in a skill,<br/>and your own rules"]
-    HOOK["PreToolUse hook"]
+    subgraph G["~/.claude/agent-reflect · the hook's files"]
+        RULES["guard-rules.json<br/>command, path and error patterns of lessons<br/>in the index or in a skill, and your own rules"]
+        FIRES["guard-fires.jsonl<br/>every showing"]
+    end
+    HOOK["The hook<br/>before tool calls and after Bash"]
 
     STATE -.->|"tracks"| LIVE
     STATE -.->|"tracks"| WAIT
     STATE -->|"writes"| RULES
     RULES --> HOOK
-    HOOK -->|"logs each showing, counted at the next run"| STATE
+    HOOK -->|"logs"| FIRES
+    FIRES -->|"counted at the next run"| STATE
 ```
 
-`MEMORY.md` is kept under 190 lines and 24,000 characters, inside the 25,000 bytes Claude Code loads of it, with at most 40 lines of agent-reflect's own. When it runs over, lesson lines leave first, lowest confidence and oldest first, and those lessons wait again; your lines are never touched.
+`MEMORY.md` is kept under 190 lines and 24,000 characters, inside the 25,000 bytes Claude Code loads of it, with at most 40 lines of agent-reflect's own. When it runs over, lesson lines leave first, lowest confidence and oldest first, and those lessons wait again; a lesson that blocks a command keeps its line, and your lines are never touched.
 
 ### The path of a lesson
 
@@ -161,7 +170,7 @@ flowchart TB
         WAIT["Waiting<br/>its file, no line in MEMORY.md"]
         LIVE["In the index<br/>its file and a line in MEMORY.md"]
         WAIT -->|"high confidence, a second case or approve,<br/>if MEMORY.md has room"| LIVE
-        LIVE -->|"MEMORY.md over its limits"| WAIT
+        LIVE -->|"MEMORY.md over its limits,<br/>unless it blocks a command"| WAIT
     end
 
     LIVE -->|"agent-reflect retire"| RET["Retired<br/>its file stays, no line"]
@@ -170,8 +179,8 @@ flowchart TB
 
     WAIT --> OUT{"Leaves memory"}
     LIVE --> OUT
-    OUT -->|"confirmed in 2 sessions within 30 days,<br/>or broken twice"| SKILL["In a skill<br/>no file; the hook still shows it"]
-    OUT -->|"the weekly tidy"| GONE["Tidied away<br/>merged or no longer true"]
+    OUT -->|"confirmed in 2 sessions within 30 days,<br/>or broken twice"| SKILL["In a skill<br/>no file; the hook still shows it;<br/>a verdict on the move after 30 days"]
+    OUT -->|"the weekly tidy,<br/>never a blocking lesson"| GONE["Tidied away<br/>merged or no longer true"]
     OUT -->|"you delete its file,<br/>or the line of one in the index"| REJ["Rejected<br/>never written again"]
     OUT -->|"you edit its file"| YOURS["Yours<br/>never edited again"]
 ```
@@ -211,7 +220,8 @@ lesson path                                           now  this week
   │ in a skill   │  a rule in a skill or CLAUDE.md      3         +1
   └──────────────┘
   aside: retired 0 · tidied away 1 · rejected by you 1 · yours now 0
-  back to waiting: MEMORY.md over its limits · a retired lesson happens again
+  back to waiting: · MEMORY.md over its limits, except a lesson that blocks a command
+                   · a retired lesson happens again
 
 🗃 MEMORY.md · webapp
    chars    █░░░░░░░░░░░░░░░░░░░  3%
@@ -288,7 +298,9 @@ agent-reflect recent [--hours N] [-v]   # what the last night did
 agent-reflect staged                    # lessons waiting for a second case
 agent-reflect approve <id>              # put a waiting lesson into MEMORY.md now
 agent-reflect retire <id>               # take a lesson's line out, keep its file
-agent-reflect guard list|add|remove|set|unset|test|on|off
+agent-reflect confirm <id>              # a fact was checked again and still holds
+agent-reflect guard list|add|remove|set|unset|test|on|off   # --path: over a file, --error: over an error text
+agent-reflect guard block|unblock <id>  # refuse a command a lesson's trigger matches
 agent-reflect baseline --since YYYY-MM-DD [--dry-run]
 agent-reflect rollback <RUN_ID> | --list
 agent-reflect reflect --dry-run         # a night's run without writing
@@ -315,4 +327,4 @@ Changes land through a pull request into `master`. The `tests` check (`.github/w
 
 ## License
 
-MIT
+MIT, except what is adapted from [Harness²](https://github.com/google-research/harness2) (Apache-2.0): see [third_party/harness2](third_party/harness2/NOTICE.md).

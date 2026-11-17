@@ -96,9 +96,11 @@ class FakeGit:
     """Same function names as gitops; prepare_worktree checks out `origin` files."""
 
     def __init__(self, origin: dict[str, str] | None = None, states: dict[str, str] | None = None,
-                 main_text: str = "", fail: dict[str, Exception] | None = None, after_prepare=None):
+                 main_text: str = "", fail: dict[str, Exception] | None = None, after_prepare=None,
+                 merged_at: dict[str, str] | None = None):
         self.origin = origin or {}
         self.states = states or {}
+        self.merged_at = merged_at or {}
         self.main_text = main_text
         self.fail = fail or {}
         self.after_prepare = after_prepare
@@ -138,6 +140,10 @@ class FakeGit:
     def pr_state(self, repo, url, token):
         self._step("pr_state", repo, url, token)
         return self.states[url]
+
+    def pr_merged_at(self, repo, url, token):
+        self._step("pr_merged_at", repo, url, token)
+        return self.merged_at.get(url)
 
     def file_at_origin_main(self, repo, rel_path):
         self._step("file_at_origin_main", repo, rel_path)
@@ -1217,3 +1223,101 @@ def test_a_memory_reads_surprise_does_not_cost_the_week(env):
     assert _kinds(summary["errors"]) == ["memory_reads_failed"]
     assert "memory_reads_failed" in consolidate.ERROR_KINDS
     assert env.state.last_consolidate_at == NOW_ISO  # the week's run still finished
+
+
+def test_a_moved_lesson_remembers_where_it_went_when_and_through_which_pr(env):
+    personal = _lesson(env, "aaaa0001")
+    repo = _lesson(env, "aaaa0002")
+    plan = _plan(promotions=[_promote("personal:alpha", [personal.id]),
+                             _promote("repo:webapp:check-logic", [repo.id])])
+    _run(env, FakeLlm(plan, edits={"personal:alpha": _edit(), "repo:webapp:check-logic": _edit()}))
+    assert (personal.promoted_at, personal.promoted_to, personal.promoted_pr) == (NOW_ISO, "personal:alpha", "")
+    assert (repo.promoted_at, repo.promoted_to, repo.promoted_pr) == (
+        NOW_ISO, "repo:webapp:check-logic", "https://github.com/o/r/pull/1")
+    # a personal skill holds the rule at once; a PR's rule is there only from its merge
+    assert (personal.moved_since, repo.moved_since) == (NOW_ISO, None)
+
+
+def test_a_merged_pr_records_when_github_says_it_was_merged(env):
+    env.state.open_prs = [{"repo": "webapp", "url": u, "branch": "b", "status": "open", "created_at": "t",
+                           "cursor_sync": []} for u in ("u1", "u2", "u3")]
+    git = FakeGit(states={"u1": "MERGED", "u2": "MERGED", "u3": "OPEN"}, merged_at={"u1": "2026-10-21T09:00:00Z"})
+    sync_merged_prs(env.cfg, env.state, git=git, now_iso=NOW_ISO)
+    # u2: GitHub gave no time, so the run that saw the merge dates it
+    assert [p.get("merged_at") for p in env.state.open_prs] == ["2026-10-21T09:00:00Z", NOW_ISO, None]
+
+
+def test_gh_gives_the_merge_time_in_utc():
+    from agent_reflect import gitops
+
+    def run(cmd, **kw):
+        assert cmd[:3] == ["gh", "pr", "view"] and cmd[-2:] == ["--json", "mergedAt"]
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"mergedAt": "2026-10-21T11:00:00+02:00"}', stderr="")
+    assert gitops.pr_merged_at(Path("/r"), "u1", "tok", run=run) == "2026-10-21T09:00:00Z"
+    empty = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout='{"mergedAt": null}', stderr="")  # noqa: E731
+    assert gitops.pr_merged_at(Path("/r"), "u1", "tok", run=empty) is None
+
+
+def test_a_rules_file_every_session_loads_grows_by_one_line_at_most(env):
+    lesson = _lesson(env, "aaaa0001")
+    grows = _edit("Keep commits small.", "Keep commits small.\nRun the gate first.\n\nPush after the gate.",
+                  "Add two rules")
+    summary = _run(env, FakeLlm(_plan(promotions=[_promote("repo:webapp:CLAUDE.md", [lesson.id])]),
+                                edits={"repo:webapp:CLAUDE.md": grows}))
+    assert summary["promoted"] == [] and lesson.status == "live"
+    [event] = summary["errors"]
+    assert event["kind"] == "edit_failed" and "every session" in event["error"]
+
+
+def test_a_rules_file_may_take_a_line_for_one_it_cuts(env):
+    lesson = _lesson(env, "aaaa0001")
+    swap = _edit("Keep commits small.", "Keep commits small and run the gate first.\nPush after the gate.",
+                 "Merge the gate rule")
+    summary = _run(env, FakeLlm(_plan(promotions=[_promote("repo:webapp:CLAUDE.md", [lesson.id])]),
+                                edits={"repo:webapp:CLAUDE.md": swap}))
+    assert lesson.status == "promoted" and summary["errors"] == []
+
+
+def test_the_edit_prompt_states_the_budget_of_a_rules_file_only(env):
+    from agent_reflect.skills import Target
+
+    rules = Target("repo:webapp:CLAUDE.md", "repo", env.webapp / "CLAUDE.md", None, "webapp", "CLAUDE.md", "rules")
+    skill = Target("personal:alpha", "personal", env.alpha, None, None, None, "alpha")
+    assert "не больше одной строки" in consolidate.build_edit_prompt(rules, RULES, [], [], [])
+    assert "не больше одной строки" not in consolidate.build_edit_prompt(skill, SKILL, [], [], [])
+
+
+def test_the_weekly_plan_sees_the_numbers_behind_each_lesson(env):
+    lesson = _lesson(env, "aaaa0001")
+    lesson.violations, lesson.reads, lesson.fires, lesson.kind = 2, 7, 3, "fact"
+    prompt = consolidate.build_plan_prompt(env.cfg, [lesson], set(), {}, {}, [])
+    for part in ("вид: fact", "нарушений: 2", "прочтений: 7", "показов хуком: 3", "сессий за 30 дней:"):
+        assert part in prompt, part
+    assert "назови числа" in prompt
+
+
+
+def test_every_move_is_kept_with_its_run_even_of_user_notes_only(env):
+    path = str(env.user_file)
+    env.state.user_rule_repeats = {path: [{"session": "s9", "ts": "t", "text": "[2] снова две задачи"}]}
+    _run(env, FakeLlm(_plan(promotions=[_promote("personal:alpha", files=[path])]),
+                      edits={"personal:alpha": _edit()}))
+    assert env.state.moves == [{"target": "personal:alpha", "at": NOW_ISO, "pr_url": "", "run_id": RUN_ID}]
+
+
+def test_the_weekly_run_never_removes_or_absorbs_a_lesson_the_user_made_blocking(env):
+    blocked = _lesson(env, "aaaa0001")
+    other = _lesson(env, "aaaa0002")
+    blocked.block = True
+    plan = _plan(removals=[{"lesson_id": blocked.id, "reason": "r"}],
+                 merges=[{"keep": other.id, "absorb": [blocked.id], "reason": "r"}])
+    summary = _run(env, FakeLlm(plan))
+    assert blocked.status == "live" and blocked.block is True
+    reasons = [e["reason"] for e in summary["errors"] if e["kind"] == "plan_invalid"]
+    assert reasons.count("the user made it blocking") == 2
+
+
+def test_the_weekly_plan_sees_which_lessons_block(env):
+    lesson = _lesson(env, "aaaa0001")
+    lesson.block = True
+    assert "блокирует: да" in consolidate.build_plan_prompt(env.cfg, [lesson], set(), {}, {}, [])

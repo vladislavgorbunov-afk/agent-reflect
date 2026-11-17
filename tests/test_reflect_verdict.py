@@ -616,7 +616,8 @@ def test_violation_of_a_live_lesson_is_counted_apart_from_repeats(env):
     assert _apply_later(env, _violated(lesson_id)) == "violated"
     lesson = env.state.lessons[lesson_id]
     assert (lesson.repeats, lesson.violations, lesson.last_violated_at) == (1, 1, LATER)
-    assert lesson.evidence[-1] == {"session": "s2", "ts": "2026-10-21T02:00:00Z", "text": "[3] снова повторил коммит"}
+    assert lesson.evidence[-1] == {"session": "s2", "ts": "2026-10-21T02:00:00Z", "text": "[3] снова повторил коммит",
+                                   "violated": True}
     assert lesson.updated_at == LATER and lesson.status == "live"
     assert lesson.sha256 == _sha(env.memory / lesson.file)
     assert _kinds(env) == ["lesson_live", "lesson_new", "lesson_violated"]

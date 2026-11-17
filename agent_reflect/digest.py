@@ -11,7 +11,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta, tzinfo
 from pathlib import Path
 
-from . import chart, health, i18n, memory_reads, usage
+from . import chart, effect, health, i18n, memory_reads, recent, usage
 from .config import Config
 from .i18n import quoted, t
 from .ledger import Lesson, parse_ts
@@ -44,6 +44,7 @@ EXTRA_SECTIONS = (
     ("clusters", "🧩", ("Repeated corrections", "Повторяющиеся поправки"), ("Corrections", "Поправки")),
     ("broken_rules", "📜", ("Broken rules", "Нарушенные правила"), ("Rules", "Правила")),
     ("care", "🧹", ("Lesson care", "Уход за уроками"), ("Care", "Уход")),
+    ("effects", "📈", ("Did the moves into skills help", "Помогли ли переносы в скиллы"), ("Moves", "Переносы")),
 )
 
 
@@ -84,8 +85,12 @@ def _lesson_line(lesson_id: str, lessons: dict[str, Lesson]) -> str:
     project = Path(lesson.project_root).name or lesson.project_root
     sessions = ", ".join(dict.fromkeys(e.get("session", "") for e in lesson.evidence))
     violated = f", {violations_phrase(lesson.violations)}" if lesson.violations else ""
-    return (f"- **{lesson.title}** ({project}, {lesson.confidence}, " + t("repeats: ", "повторов: ")
-            + f"{lesson.repeats}{violated}) — " + t("When: ", "Когда: ") + f"{lesson.cue} → {lesson.lesson}. "
+    fact = t(", fact", ", факт") if lesson.kind == "fact" else ""
+    recheck = t(" Recheck: ", " Перепроверить: ") + f"{lesson.recheck}." if lesson.kind == "fact" and lesson.recheck else ""
+    hooks = recent.hook_patterns(lesson)
+    return (f"- **{lesson.title}** ({project}{fact}, {lesson.confidence}, " + t("repeats: ", "повторов: ")
+            + f"{lesson.repeats}{violated}) — " + t("When: ", "Когда: ") + f"{lesson.cue} → {lesson.lesson.rstrip().rstrip('.')}."
+            + recheck + (t(" Hook: ", " Хук: ") + f"{hooks}." if hooks else "") + " "
             + t("Sessions: ", "Сессии: ") + sessions)
 
 
@@ -141,8 +146,8 @@ def _usage_lines(stats: dict, lessons: dict[str, Lesson]) -> list[str]:
     for lesson in live:
         project = Path(lesson.project_root).name or lesson.project_root
         violated = f", {violations_phrase(lesson.violations)}" if lesson.violations else ""
-        # a lesson with a trigger reaches the agent through the Bash hook, whether or not its file is opened
-        shown = t(", shown by the hook: ", ", показан хуком: ") + i18n.times(lesson.fires) if lesson.trigger else ""
+        # a lesson with a trigger reaches the agent through the hook, whether or not its file is opened
+        shown = t(", shown by the hook: ", ", показан хуком: ") + i18n.times(lesson.fires) if lesson.patterns() else ""
         out.append(f"- **{lesson.title}** ({project}) — " + t("read: ", "прочитан: ")
                    + f"{i18n.times(lesson.reads)}{shown}{violated}")
     if stats.get("stalled"):
@@ -193,11 +198,60 @@ def _care_line(item: dict, lessons: dict[str, Lesson]) -> str:
                  f"Take its line out of the index, keeping the file: `agent-reflect retire {lesson_id}`",
                  f"- {name} — {days_word} в индексе без чтений, показов хуком "
                  f"и повторов. Убрать строку из индекса, файл останется: `agent-reflect retire {lesson_id}`")
+    if item.get("reason") == "recheck":
+        days_word = i18n.count(int(item.get("days") or 0), ("day", "days"), ("день", "дня", "дней"))
+        how = (lesson.recheck if lesson else "") or "—"
+        return t(f"- {name} — a fact last confirmed {days_word} ago. Check it again: {how}; "
+                 f"if it holds: `agent-reflect confirm {lesson_id}`, if not: `agent-reflect retire {lesson_id}`",
+                 f"- {name} — факт подтверждался {days_word} назад. Перепроверь: {how}; "
+                 f"верен — `agent-reflect confirm {lesson_id}`, нет — `agent-reflect retire {lesson_id}`")
     phrase = violations_phrase(int(item.get("violations") or 0))
+    if item.get("reason") == "ignored":
+        shown = i18n.times(int(item.get("fires") or 0))
+        return t(f"- {name} — {phrase}, although the hook showed it ({shown}). Make it blocking, so a command "
+                 f"its pattern matches is refused until the agent rewrites it: `agent-reflect guard block {lesson_id}` "
+                 f"(lift it with `guard unblock`)",
+                 f"- {name} — {phrase}, хотя хук его показывал ({shown}). Сделать блокирующим — команда с этим "
+                 f"шаблоном будет отклонена, пока агент её не перепишет: `agent-reflect guard block {lesson_id}` "
+                 f"(снять — `guard unblock`)")
     return t(f"- {name} — {phrase}, and it has no hook pattern. "
-             f"Set one: `agent-reflect guard set {lesson_id} <regex>` (for a file, with `--path`)",
+             f"Set one: `agent-reflect guard set {lesson_id} <regex>` (for a file, with `--path`; "
+             f"for the text of an error, with `--error`)",
              f"- {name} — {phrase}, а шаблона для хука нет. "
-             f"Поставить: `agent-reflect guard set {lesson_id} <regex>` (для файла — с `--path`)")
+             f"Поставить: `agent-reflect guard set {lesson_id} <regex>` (для файла — с `--path`, "
+             f"для текста ошибки — с `--error`)")
+
+
+def _effect_line(item: dict, lessons: dict[str, Lesson]) -> str:
+    """One move into a skill: its verdict (effect.VERDICTS), or a comeback while it is still watched."""
+    lesson = lessons.get(item.get("lesson_id"))
+    title = lesson.title if lesson else str(item.get("lesson_id", ""))
+    name = f"**{title}** → `{item.get('target', '')}`"
+    before, after = int(item.get("before") or 0), int(item.get("after") or 0)
+    days = effect.WINDOW.days
+    was, now = _in_sessions(before), _in_sessions(after)
+    verdict = item.get("verdict")
+    if verdict == "helped":
+        return t(f"- {name} — helped: the mistake was {was} in the {days} days before the move, in none after",
+                 f"- {name} — помог: за {days} дней до переноса ошибка была {was}, после — ни разу")
+    if verdict == "not_helped":
+        return t(f"- {name} — did not help: the mistake was {was} before the move and {now} after. "
+                 f"See where the rule stands in the skill and whether the agent reads that skill",
+                 f"- {name} — не помог: до переноса ошибка была {was}, после — {now}. "
+                 f"Посмотри, где правило стоит в скилле и читает ли агент этот скилл")
+    if verdict == "confounded":
+        return t(f"- {name} — cannot tell: the same file got another move in these weeks "
+                 f"(before: {was}, after: {now})",
+                 f"- {name} — не понять: тот же файл в эти недели правили ещё раз (до — {was}, после — {now})")
+    if verdict == "too_little_data":
+        return t(f"- {name} — too little data: before the move the mistake was only {was}",
+                 f"- {name} — мало данных: до переноса ошибка была только {was}")
+    if verdict == "not_merged":
+        return t(f"- {name} — the PR was closed without a merge: the rule is neither in memory nor in the skill",
+                 f"- {name} — PR закрыт без мержа: правила нет ни в памяти, ни в скилле")
+    left = i18n.count(int(item.get("days_left") or 0), ("day", "days"), ("день", "дня", "дней"))
+    return t(f"- {name} — the mistake came back after the move, {now} so far; the verdict in {left}",
+             f"- {name} — ошибка повторилась после переноса, пока {now}; вердикт через {left}")
 
 
 def _rule_line(item: dict) -> str:
@@ -415,6 +469,7 @@ def render(summary: dict, lessons: dict[str, Lesson], week: str, cfg: Config | N
         "clusters": [line for c in summary.get("clusters") or [] for line in _cluster_lines(c, lessons)],
         "broken_rules": [_rule_line(r) for r in summary.get("broken_rules") or []],
         "care": [_care_line(c, lessons) for c in summary.get("care") or []],
+        "effects": [_effect_line(e, lessons) for e in summary.get("effects") or []],
     }
     if extra["broken_rules"]:
         extra["broken_rules"].append(guard_hint())

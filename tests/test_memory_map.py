@@ -99,9 +99,31 @@ def test_lessons_counted_by_status_and_hook(cfg, folder, lessons):
     assert (p.promoted, p.removed, p.rejected, p.owned) == (2, 1, 1, 1)
 
 
-def test_a_path_pattern_counts_as_a_hook_too(cfg, folder, lessons):
-    lessons["bbbb2222"] = lesson(cfg, folder, "bbbb2222", "live", path_trigger=r"\.env$")
+@pytest.mark.parametrize("pattern", [{"path_trigger": r"\.env$"}, {"error_trigger": "rejected.*non-fast-forward"}])
+def test_a_path_or_an_error_pattern_counts_as_a_hook_too(cfg, folder, lessons, pattern):
+    lessons["bbbb2222"] = lesson(cfg, folder, "bbbb2222", "live", **pattern)
     assert picture(cfg, folder, lessons).hooked == 2
+
+
+def test_blocking_lessons_and_facts_are_counted_among_the_live(cfg, folder, lessons):
+    lessons["aaaa1111"] = lesson(cfg, folder, "aaaa1111", "live", trigger="git push", block=True)
+    lessons["bbbb2222"] = lesson(cfg, folder, "bbbb2222", "live", kind="fact", recheck="ls lib/gen")
+    lessons["cccc3333"] = lesson(cfg, folder, "cccc3333", "staged", kind="fact", block=True)  # not live: not counted
+    p = picture(cfg, folder, lessons)
+    assert (p.blocking, p.facts) == (1, 1)
+
+
+def test_blocking_lessons_and_facts_get_a_line_only_when_there_are_some(cfg, folder, lessons):
+    plain = memory_map.block(cfg, lessons, None, FIRST, LAST, timezone.utc)
+    assert not any("блокируют" in line or "фактов" in line for line in plain)
+    lessons["aaaa1111"] = lesson(cfg, folder, "aaaa1111", "live", trigger="git push", block=True)
+    lessons["bbbb2222"] = lesson(cfg, folder, "bbbb2222", "live", kind="fact")
+    block = memory_map.block(cfg, lessons, None, FIRST, LAST, timezone.utc)
+    assert "  1 без строки: агенту не видны        1 без шаблона" not in block  # the columns stay apart
+    right = [line[line.index("2 auto_*.md"):] for line in block if "2 auto_*.md в индексе" in line]
+    assert right == ["2 auto_*.md в индексе"]
+    assert any(line.endswith("из них блокируют команду: 1") for line in block)
+    assert any(line.endswith("из них фактов: 1") for line in block)
 
 
 def test_this_week_counts_only_the_steps_taken_on_the_digest_days(cfg, folder, lessons):
@@ -138,7 +160,7 @@ def test_block_draws_the_map_the_path_and_the_gauges(cfg, folder, lessons):
     reads = {"days": 30, "locations": [{"name": "webapp", "files": [{"name": "deploy.md", "reads": 0}]}]}
     block = memory_map.block(cfg, lessons, reads, FIRST, LAST, timezone.utc)
     assert block[:3] == ["## 🧠 Память", "", "```text"] and block[-1] == "```"
-    assert block[3:37] == [
+    assert block[3:38] == [
         "🧠 webapp",
         "┌─ MEMORY.md · каждая сессия загружает его целиком ───────┐",
         "│ 4 твоих строки                    2 строки уроков из 40 │",
@@ -171,10 +193,11 @@ def test_block_draws_the_map_the_path_and_the_gauges(cfg, folder, lessons):
         "  │ в скилле     │  правило в скилле или CLAUDE.md       2         +1",
         "  └──────────────┘",
         "  в стороне: снят 1 · убран чисткой 1 · отклонён тобой 1 · стал твоим 1",
-        "  обратно в «ждёт»: MEMORY.md переполнен · снятый урок повторился",
+        "  обратно в «ждёт»: · MEMORY.md переполнен, кроме урока, который блокирует команду",
+        "                    · снятый урок повторился",
         "",
     ]
-    assert block[37:-1] == chart.memory_gauges(cfg, lessons, detailed=True)
+    assert block[38:-1] == chart.memory_gauges(cfg, lessons, detailed=True)
 
 
 def _arrows(line: str) -> list[int]:
