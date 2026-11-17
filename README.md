@@ -4,27 +4,74 @@ agent-reflect reads your Claude Code session transcripts every night, finds the 
 
 It runs locally on macOS under launchd and calls the model through your own `claude` CLI. Nothing is sent anywhere else.
 
+## Why
+
+An agent that got something wrong yesterday does not remember it today. You correct it, it agrees, and a week later a new session makes the same mistake: the flag that does not exist on macOS, the test run on the device you said not to touch, "done" before anything was checked. Claude Code has memory files and skills for exactly this, but someone has to write the lesson down, keep it short, and notice when it stops working.
+
+agent-reflect does that bookkeeping. It reads what your sessions did, writes the mistakes and your corrections down as short lessons, shows each lesson to the agent at the moment it is about to repeat the mistake, and moves the lessons that keep proving themselves into your skills. What you get:
+
+- **Fewer repeated mistakes.** A mistake the agent made in a project becomes a rule in that project's memory, written from what actually happened in the session.
+- **Less work sent back.** The weekly digest counts how often you returned work ("you said it was done", "that is not what I asked") per 100 of your replies, next to a baseline you measure once over the weeks before (`agent-reflect baseline`), so you can see whether it helps.
+- **The rule at the right moment.** A lesson with a trigger reaches the agent when it runs the matching command or opens the matching file, not only if it happens to read `MEMORY.md`.
+- **Memory that stays small and current.** Duplicates are merged, lessons nobody needs are retired, and memory files no agent opened in a month are pointed out.
+- **Skills that grow from evidence.** Only lessons confirmed across sessions reach a skill, through a draft PR you review.
+- **Failures you would not see otherwise.** A hook that fails on every call, API errors the CLI retried until it gave up: counted and reported.
+
 ## What it does
 
-**Every night (03:30, and at login).** It reads the parts of your sessions it has not seen yet, including subagent transcripts. It looks for:
+### Every night (03:30, and at login)
 
-- failed commands, including quiet failures (`command not found`, a traceback, `Permission denied`);
-- your corrections: "you said it was done, it is not", a rule from your `CLAUDE.md` that was broken, "that is not what I meant".
+**Reads what is new.** Only the parts of your transcripts it has not read yet, across every project in `~/.claude/projects`, subagent transcripts included. A transcript written to in the last two hours waits for the next run.
 
-The model writes at most a few lessons a night, as `auto_<id>.md` files in the project's memory folder. A second call checks each lesson against the transcript: the quoted words must be in it. Only lessons that are important or have happened twice get a line in `MEMORY.md`. The rest wait for a second case, and `agent-reflect staged` lists them.
+**Finds the moments worth learning from**, before any model is called:
 
-The night's report goes to `reports/<date>.md`, and a macOS notification sums it up.
+- a tool call that failed, and a quiet failure the tool did not report as one (`command not found`, a traceback, `Permission denied`, a non-zero exit code);
+- a hook that blocked the agent;
+- you rejecting a tool call or interrupting the agent;
+- your replies to the agent: this is where corrections live ("no, not like that", "I already told you", "did you actually check it?");
+- a recovery: the same program failed twice and then worked with a different command, the clearest sign of what the right way was.
 
-**Every week.** It moves confirmed lessons into skills:
+A part of a session with none of these never reaches the model. A subagent part goes only when it holds a recovery or a hook block, because subagents fail tools all day while they look around.
 
-- personal skills in `~/.claude/skills` are edited directly, with a backup;
-- skills and `CLAUDE.md` in the repositories you list are changed through draft PRs.
+**Asks the model what to remember.** Claude Sonnet, through your own `claude` CLI with no tools and no hooks, sees the part of the session (secrets scrubbed), the lessons already in memory and your `CLAUDE.md`. For each part it decides: nothing worth keeping; a new lesson; a repeat of a known lesson; a known lesson the agent broke although it was in memory; or one of your own rules broken again, which is counted against your rule rather than written as a new lesson. It also lists your corrections by kind: said "done" when it was not, broke a rule, misunderstood the task, got a tool wrong.
 
-It also groups similar corrections from the last 30 days into new lessons. The weekly digest (`digests/<week>.md`) shows how often you sent work back, the number the lessons are there to bring down. It also lists which memory files no agent opened in 30 days.
+**Checks before writing anything.**
 
-**While you work.** A `PreToolUse` hook on Bash, Edit and Write shows a lesson to the agent at the moment it runs a command or edits a file that matches the lesson's pattern. The hook never blocks anything.
+- A lesson quotes the transcript, and the quote must be found there.
+- A second model call reads the same part and must agree that the lesson follows from it.
+- A lesson about how to work, as opposed to how to use a tool, must quote you.
+- A lesson too vague to act on ("be more careful with hooks") is dropped, and so is one you rejected before.
 
-**What it leaves alone.** Memory files you wrote yourself are never touched. Delete an `auto_*.md` file or its index line and that lesson is rejected for good. Edit one and it becomes yours.
+**Writes it where Claude Code reads it.** The lesson becomes `auto_<id>.md` in that project's memory folder: when it applies, what to do, why, and the evidence. It gets a line in `MEMORY.md`, the index every session loads, only when it is high-confidence or has happened twice; the rest wait for a second case. `MEMORY.md` is kept within the limits Claude Code reads (characters, bytes, lines), with at most 40 lines of agent-reflect's own.
+
+**Gives the lesson a trigger.** For a lesson about a command, the model proposes a regex for it; for one about a file, a regex for its path. A command trigger is kept only if it matches the command that failed and not the one that worked.
+
+**Reports the night.** `reports/<date>.md` and a notification: what changed in memory, what needs you (your rule broken again, a note that looks out of date, an error), what was reviewed, how much work you sent back, silent failures, and what the model calls cost.
+
+### While you work
+
+A `PreToolUse` hook on Bash, Edit, Write and NotebookEdit. When a command matches a live lesson's trigger, the agent sees the lesson right there, next to the command. When it starts editing a matching file, it sees the lesson once per session. You can add rules of your own the same way (`agent-reflect guard add`), for every project or for one.
+
+The hook never blocks anything: it reminds. Every showing is counted, so the digest can tell which lessons are used and which only take up room.
+
+### Once a week
+
+- **Moves proven lessons into skills.** A lesson confirmed in at least two sessions within 30 days, or broken twice while it sat in memory, is written into the skill or `CLAUDE.md` where it belongs. Claude Opus picks the place and the edit. Personal skills in `~/.claude/skills` are edited in place with a backup; skills and `CLAUDE.md` in the repositories you list get a draft PR, never a direct commit. An edit that reads like an incident log (dates, PR numbers, ticket keys, session ids) is refused: a skill keeps rules, not history.
+- **Tidies memory.** Merges lessons that say the same thing and removes ones that no longer hold, at most a quarter of the lessons per run. For memory entries you wrote yourself it only suggests changes.
+- **Learns from repeated corrections.** Groups your corrections from the last 30 days. Three or more of one kind from at least two sessions become a lesson about how to work, at most two per project a week.
+- **Looks after the lessons.** Names lessons that sat in the index for 30 days with no reads, hook showings or repeats (`agent-reflect retire` takes the line out and keeps the file), and lessons the agent keeps breaking that still have no trigger.
+- **Writes the digest.** `digests/<week>.md` and a notification: new and broken lessons, what moved into skills, the PRs, work sent back per 100 replies next to the baseline, memory files no agent opened in 30 days, silent failures, cost.
+
+### Silent failures
+
+Without calling a model, every run also counts hook failures and API errors that ran out of retries. When one fires 20 or more times in a night you get a notification, at most once a week for the same failure.
+
+### What it leaves alone
+
+- Memory files you wrote yourself are never edited. Delete an `auto_*.md` file or its index line, and that lesson is rejected for good. Edit one and it becomes yours.
+- Repositories are changed only through draft PRs, and only the ones you list in the config.
+- Apart from those PRs, the only thing that leaves your machine is the model calls, made through your own `claude` CLI. Secrets in transcripts (tokens, keys, passwords) are masked before the model sees them and before anything is written.
+- A weekly run can be undone with `agent-reflect rollback <RUN_ID>`, and `agent-reflect reflect --dry-run` shows what a night would do without writing.
 
 ## Requirements
 
