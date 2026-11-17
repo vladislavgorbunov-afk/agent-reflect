@@ -624,3 +624,17 @@ def test_sync_ownership_records_an_unreadable_file_as_takeover(tmp_path):
     assert sync_ownership(state) == [("/r", str(tmp_path))]
     assert _events(state) == [{"kind": "lesson_user_owned", "project": "/r", "lesson_id": lesson.id,
                                "title": "Заголовок", "reason": "edited"}]
+
+
+def test_rebalance_never_takes_a_blocking_lesson_out_of_the_index(tmp_path):
+    # a staged lesson leaves the hook's rules, and its block with them: only the user lifts a block
+    cfg = _cfg(tmp_path, index_line_limit=10)
+    _user_index(tmp_path, 4)
+    low = _ours(tmp_path, "aaaaaaa2", confidence="low", created_at="2026-10-05T00:00:00Z")
+    low.block = True
+    medium = _ours(tmp_path, "aaaaaaa4", confidence="medium", created_at="2026-10-02T00:00:00Z")
+    others = [_ours(tmp_path, f"aaaaaab{n}", created_at=f"2026-10-0{n}T00:00:00Z") for n in (1, 6)]
+    _user_index_append(tmp_path, ["- [later.md](later.md) — пользователь дописал", "- [x.md](x.md) — ещё"])
+    state = State(lessons={x.id: x for x in (low, medium, *others)})
+    assert rebalance(state, cfg, "/r", tmp_path) is True
+    assert low.status == "live" and medium.status == "staged"

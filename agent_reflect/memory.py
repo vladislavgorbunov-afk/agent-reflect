@@ -39,12 +39,14 @@ def render_lesson(lesson: Lesson) -> str:
     evidence = ", ".join(f"{e['session']}@{e['ts']}" for e in lesson.evidence)
     hook = _one_line(lesson.hook)
     cue = re.sub(r"[.!;\s]+$", "", lesson.cue)
+    fact = lesson.kind == "fact"
+    recheck = f"\n**Как перепроверить:** {lesson.recheck} (факт выяснен {lesson.created_at[:10]})\n" if fact else ""
     return (
         "---\n"
         f"name: auto-{lesson.id}\n"
         f"description: {json.dumps(hook, ensure_ascii=False)}\n"
         "metadata:\n"
-        "  type: feedback\n"
+        f"  type: {'project' if fact else 'feedback'}\n"
         "  source: agent-reflect\n"
         f"  lesson_id: {lesson.id}\n"
         f"  confidence: {lesson.confidence}\n"
@@ -54,6 +56,7 @@ def render_lesson(lesson: Lesson) -> str:
         f"{lesson.lesson}\n\n"
         f"**Why:** {lesson.why}\n\n"
         f"**How to apply:** Когда: {cue}. Делать: {lesson.lesson}\n"
+        f"{recheck}"
     )
 
 
@@ -328,7 +331,9 @@ def rebalance(state: State, cfg: Config, project_root, memory_dir, now_iso: str 
     changed = False
     try:
         text = read_index(memory_dir)
-        live = sorted((lesson for lesson in ours if lesson.status == "live" and _has_entry(text, lesson.file)),
+        # a blocking lesson keeps its line: staged, it would leave the hook's rules, and only the user lifts a block
+        live = sorted((lesson for lesson in ours
+                       if lesson.status == "live" and not lesson.block and _has_entry(text, lesson.file)),
                       key=lambda lesson: (_CONFIDENCE_RANK.get(lesson.confidence, 0), lesson.created_at))
         for lesson in live:
             if _fits(text, cfg):

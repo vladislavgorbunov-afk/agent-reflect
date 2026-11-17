@@ -133,7 +133,12 @@ def _week_summary() -> dict:
                      {"title": "Новое", "outcome": "new", "sessions": 1, "count": 1, "said": []}],
         "broken_rules": [{"rule": "на телефоне", "count": 3, "sessions": 2, "said": "я же говорил"}],
         "care": [{"lesson_id": "ab12cd34", "reason": "stale", "days": 50},
-                 {"lesson_id": "ab12cd34", "reason": "unhelped", "violations": 2}],
+                 {"lesson_id": "ab12cd34", "reason": "unhelped", "violations": 2},
+                 {"lesson_id": "ab12cd34", "reason": "ignored", "violations": 2, "fires": 3},
+                 {"lesson_id": "ab12cd34", "reason": "recheck", "days": 40}],
+        "effects": [{"lesson_id": "ab12cd34", "target": "personal:a", "verdict": verdict, "before": 2, "after": 1,
+                     "days_left": 9}
+                    for verdict in ("helped", "not_helped", "confounded", "too_little_data", "not_merged", "watching")],
         "usage": {"reads": 0, "with_reads": 0, "live": 1, "stalled": True},
         "memory_reads": _memory_reads(),
         "skipped_no_project": 4,
@@ -154,7 +159,11 @@ def test_the_weekly_digest_in_english_has_every_section_and_no_russian(busy, eng
                  "2 times · code 529", "## 🧩 Repeated corrections · 2",
                  "lesson confirmed; 3 corrections in 2 sessions", "new lesson; 1 correction in 1 session",
                  "## 📜 Broken rules · 1", "3 times in 2 sessions; for example: ", "can be shown to the agent as it acts",
-                 "## 🧹 Lesson care · 2", "50 days in the index", "and it has no hook pattern",
+                 "## 🧹 Lesson care · 4", "50 days in the index", "and it has no hook pattern",
+                 "although the hook showed it (3 times)", "`agent-reflect guard block ab12cd34`",
+                 "a fact last confirmed 40 days ago", "## 📈 Did the moves into skills help · 6", "— helped: ",
+                 "— did not help: ", "— cannot tell: ", "— too little data: ", "closed without a merge",
+                 "the verdict in 9 days",
                  "## Lesson reads", "Lesson reads by the agent: 0", "shown by the hook: 3 times", "UserPromptSubmit",
                  "## Memory: not opened in 30 days", "2 of 4 files never opened", "Opened most: ",
                  "🔁 work sent back: ", "💸 model: 3 calls", "🗃 MEMORY.md · webapp", "chars    ", "~4.6k bytes left", "lessons  ", " 2 of 40"):
@@ -165,7 +174,7 @@ def test_the_digest_notice_baseline_and_failures_in_english(english):
     title, subtitle, totals = digest.notice(_week_summary(), date(2026, 10, 20), date(2026, 10, 27))
     assert title == "📅 agent-reflect · 20–27 October"
     assert subtitle == "🧠 1 lesson → 🛠 2 skills"
-    assert "🆕 Lessons 1" in totals and "🧹 Care 2" in totals
+    assert "🆕 Lessons 1" in totals and "🧹 Care 4" in totals and "📈 Moves 6" in totals
     assert digest.notice({}, date(2026, 10, 20), date(2026, 10, 27))[2] == "😴 no changes"
     assert digest.baseline_line({**BASELINE, "detector": 1}, 2) == (
         "📏 baseline 20 Oct–9 Nov: 9.1 per 100 of your replies (77 of 846, sessions: 31)"

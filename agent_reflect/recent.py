@@ -32,12 +32,14 @@ _columns = chart.columns  # how many terminal columns a text takes
 
 # a lesson's events, weightiest first: its card is headed by the weightiest it had in the window
 _LESSON_EVENTS = ("lesson_rejected", "lesson_unlisted", "lesson_user_owned", "lesson_violated",
-                  "lesson_live", "lesson_new", "lesson_repeat")
+                  "lesson_after_promotion", "lesson_blocked", "lesson_live", "lesson_new", "lesson_repeat")
 # texts are (English, Russian) pairs, said with i18n.t
 _LESSON_HEADS = {
     "lesson_unlisted": ("➖ lesson taken out of MEMORY.md: no room left", "➖ урок убран из MEMORY.md: не хватило места"),
     "lesson_user_owned": ("✋ the lesson is yours now: you edited its file", "✋ урок перешёл к тебе: ты правил файл"),
     "lesson_violated": ("⚠️ lesson broken after it went live", "⚠️ урок нарушен после публикации"),
+    "lesson_after_promotion": ("↩️ a moved lesson's mistake came back", "↩️ ошибка перенесённого урока повторилась"),
+    "lesson_blocked": ("⛔ the hook refused a command by this lesson", "⛔ хук отклонил команду по этому уроку"),
     "lesson_live": ("➕ lesson now visible to agents", "➕ урок стал виден агентам"),
     "lesson_new": ("🆕 new lesson", "🆕 новый урок"),
     "lesson_repeat": ("🔁 lesson repeated", "🔁 урок повторился"),
@@ -292,7 +294,40 @@ def _lesson_card(lesson_id: str, lesson: Lesson | None, events: list[dict], now:
             body += _para(t("accept now: ", "принять сразу: ") + f"agent-reflect approve {lesson.id}")
     if lesson.violations:
         body.append(t("⚠️ broken after it went live: ", "⚠️ нарушен после публикации: ") + i18n.times(lesson.violations))
-    return _Card(head, body, [lesson.file])
+    if lesson.status == "promoted":
+        body += _para(_moved_line(lesson, now, tz))
+    if hooks := hook_patterns(lesson):
+        body += _para(t("🪝 hook: ", "🪝 хук: ") + hooks)
+    if lesson.kind == "fact" and lesson.recheck:
+        body += _para(lesson.recheck, t("🔎 how to recheck: ", "🔎 как перепроверить: "), " " * 9)
+    # a moved lesson's file is gone: the skill holds its rule now
+    return _Card(head, body, [lesson.promoted_to or t("a skill", "скилл")] if lesson.status == "promoted"
+                 else [lesson.file])
+
+
+def _moved_line(lesson: Lesson, now: datetime, tz: tzinfo) -> str:
+    """Where a moved lesson went and since when, and how many sessions made its mistake since."""
+    after = len({a.get("session") for a in lesson.after if isinstance(a, dict) and a.get("session")})
+    moved, since = parse_ts(lesson.promoted_at), parse_ts(lesson.moved_since)
+    if lesson.effect == "rolled_back":
+        when = t("the move was undone by a rollback", "перенос отменён откатом")
+    elif since is not None:
+        when = t("in the skill since ", "в скилле с ") + _since(since, now, tz)
+    elif lesson.promoted_pr:
+        when = t("waits for its PR's merge", "ждёт мержа PR")
+    else:
+        when = t("moved into a skill ", "перенесён в скилл ") + (_since(moved, now, tz) if moved is not None else "?")
+    return f"🛠 {when}; " + t(f"sessions with the mistake since it left memory: {after}",
+                              f"сессий с ошибкой после переноса: {after}")
+
+
+def hook_patterns(lesson: Lesson) -> str:
+    """The lesson's patterns for the hook, each with what it is matched against, and whether it blocks."""
+    names = {"command": t("command", "команда"), "error": t("error", "ошибка"), "path": t("file", "файл")}
+    parts = [f"{names[on]} /{pattern}/" for on, pattern in lesson.patterns()]
+    if parts and lesson.block and lesson.trigger:
+        parts.append(t("blocks", "блокирует"))
+    return " · ".join(parts)
 
 
 def _put_back(lesson: Lesson | None, events: list[dict]) -> bool:

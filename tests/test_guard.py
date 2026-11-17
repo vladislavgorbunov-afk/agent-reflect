@@ -155,7 +155,7 @@ def test_the_hook_goes_into_settings_beside_the_users_own_and_comes_out_alone(cf
 
 def test_settings_without_hooks_get_them_and_lose_them_again(cfg):
     assert guard.install_hook(cfg) is True
-    assert list(_settings(cfg)["hooks"]) == ["PreToolUse"]
+    assert list(_settings(cfg)["hooks"]) == ["PreToolUse", "PostToolUse", "PostToolUseFailure"]
     assert guard.uninstall_hook(cfg) is True and _settings(cfg) == {}
 
 
