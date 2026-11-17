@@ -14,6 +14,8 @@ uv run pytest -q
 
 Every commit must pass `uv run pytest -q`.
 
+Changes land through a pull request into `master`, never a direct push: the ruleset on `master` requires the `tests` check (`.github/workflows/pr-checks.yml`, the same `uv run --locked pytest -q` on macOS) on a branch that carries the latest `master`.
+
 ## Tests
 
 Tests never call real `claude`, `gh`, `launchctl` or `terminal-notifier`; all external calls go through an injected `run` / `runner` / `llm`.

@@ -1,0 +1,29 @@
+name: PR checks
+
+# Required on master by the repository ruleset, with "branches must be up to date":
+# a PR merges only once it carries the latest master and these tests pass on it.
+# No path filter on purpose: a required check that never starts leaves the PR waiting forever.
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    # agent-reflect runs only on macOS (launchd, plists, notifications): test it there
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # uv installs the Python of .python-version and exactly what uv.lock pins
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - name: Tests
+        run: uv run --locked pytest -q
