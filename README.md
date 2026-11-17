@@ -20,46 +20,27 @@ agent-reflect does that bookkeeping. It reads what your sessions did, writes the
 ## How it works
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#94a3b8", "primaryColor": "#f1f5f9", "primaryBorderColor": "#cbd5e1", "primaryTextColor": "#0f172a", "clusterBkg": "#f8fafc", "clusterBorder": "#e2e8f0", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 28, "rankSpacing": 48, "padding": 14}}}%%
 flowchart LR
-    T[("Session<br/>transcripts")]
+    S("<b>Your sessions</b><br/>load MEMORY.md at start;<br/>the hook shows a lesson<br/>at a command or an error"):::work
+    N("<b>Every night</b><br/>finds failures and corrections;<br/>Sonnet writes a lesson,<br/>Opus checks it"):::night
+    M("<b>Memory</b><br/>MEMORY.md, lesson files,<br/>hook patterns"):::mem
+    W("<b>Once a week</b><br/>Opus moves proven lessons<br/>into skills, tidies the rest"):::week
 
-    subgraph N["Every night"]
-        direction TB
-        N1["Read the parts not read yet"] --> N2["Keep the moments: a failure, a hook block,<br/>your correction or interruption, a recovery"]
-        N2 --> N3["Claude Sonnet decides: nothing, a new lesson,<br/>a repeat, a lesson broken, your rule broken"]
-        N3 --> N4["Write only what passes: the quote is in<br/>the transcript, Claude Opus agrees,<br/>concrete, not rejected before"]
-    end
+    S -->|"transcripts"| N
+    N -->|"lessons"| M
+    M -->|"every session"| S
+    M <-->|"moves, merges"| W
+    N -.- R(["reports/"]):::out
+    W -.- D(["digests/"]):::out
 
-    subgraph M["Read by Claude Code"]
-        direction TB
-        MEM[("MEMORY.md and<br/>the memory files")]
-        RULES[("Hook patterns")]
-    end
-
-    subgraph S["Every session"]
-        direction TB
-        S1["Loads MEMORY.md at start"]
-        S2["The hook shows a lesson at a matching<br/>command or file, or right after a matching error;<br/>it refuses a command only for a lesson you blocked"]
-    end
-
-    subgraph W["Once a week · Claude Opus"]
-        direction TB
-        W1["Proven lessons into a skill or CLAUDE.md:<br/>in place with a backup, or a draft PR"]
-        W2["Duplicates merged,<br/>stale lessons dropped"]
-        W3["Repeated corrections become<br/>lessons about how to work"]
-    end
-
-    T --> N1
-    N4 --> MEM
-    N4 --> RULES
-    MEM --> S1
-    RULES --> S2
-    S -.->|"new transcripts"| T
-    MEM --> W1
-    MEM --> W2
-    W3 --> MEM
-    N4 --> REP["reports/DATE.md<br/>and a notification"]
-    W --> DIG["digests/WEEK.md<br/>and a notification"]
+    classDef night fill:#eef2ff,stroke:#a5b4fc,color:#1e1b4b
+    classDef mem fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
+    classDef work fill:#fffbeb,stroke:#fcd34d,color:#78350f
+    classDef week fill:#f5f3ff,stroke:#c4b5fd,color:#4c1d95
+    classDef user fill:#f1f5f9,stroke:#cbd5e1,color:#0f172a
+    classDef muted fill:#ffffff,stroke:#cbd5e1,stroke-dasharray:4 3,color:#64748b
+    classDef out fill:#ffffff,stroke:#cbd5e1,color:#475569
 ```
 
 ## What it does
@@ -128,61 +109,68 @@ Without calling a model, every run also counts hook failures and API errors that
 ### Where it lives
 
 ```mermaid
-flowchart LR
-    subgraph P["~/.claude/projects/PROJECT/memory · what Claude Code reads"]
-        IDX["MEMORY.md<br/>loaded whole into every session"]
-        YOURS["Your memory files<br/>never edited by agent-reflect"]
-        LIVE["auto_ID.md in the index<br/>every session sees its line"]
-        WAIT["auto_ID.md with no line<br/>waiting or retired, no session sees it"]
-        IDX -->|"your lines"| YOURS
-        IDX -->|"lesson lines, at most 40"| LIVE
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#94a3b8", "primaryColor": "#f1f5f9", "primaryBorderColor": "#cbd5e1", "primaryTextColor": "#0f172a", "clusterBkg": "#f8fafc", "clusterBorder": "#e2e8f0", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 28, "rankSpacing": 48, "padding": 14}}}%%
+flowchart TB
+    subgraph P ["Project memory"]
+        direction LR
+        idx("<b>MEMORY.md</b><br/>loaded into every session"):::mem
+        yours("<b>Your notes</b><br/>never edited"):::user
+        live("<b>auto_ID.md</b><br/>in the index"):::mem
+        wait("<b>auto_ID.md</b><br/>no line: unseen"):::muted
+        idx -->|"your lines"| yours
+        idx -->|"≤ 40 lines"| live
     end
 
-    subgraph AR["agent-reflect's own files"]
-        STATE["state/state.json<br/>every lesson: status, evidence, repeats,<br/>breaks, reads, hook showings"]
-        JOURNAL["state/journal.jsonl<br/>runs and decisions, 60 days"]
-        BACKUPS["backups/<br/>memory and skill edits, for rollback"]
+    subgraph A ["agent-reflect's files"]
+        direction LR
+        st("<b>state.json</b><br/>every lesson and its counts"):::night
+        hook("<b>Hook files</b><br/>guard-rules.json<br/>guard-fires.jsonl"):::work
+        st <-->|"patterns out, showings back"| hook
     end
 
-    subgraph G["~/.claude/agent-reflect · the hook's files"]
-        RULES["guard-rules.json<br/>command, path and error patterns of lessons<br/>in the index or in a skill, and your own rules"]
-        FIRES["guard-fires.jsonl<br/>every showing"]
-    end
-    HOOK["The hook<br/>before tool calls and after Bash"]
+    st -.->|"tracks"| live & wait
 
-    STATE -.->|"tracks"| LIVE
-    STATE -.->|"tracks"| WAIT
-    STATE -->|"writes"| RULES
-    RULES --> HOOK
-    HOOK -->|"logs"| FIRES
-    FIRES -->|"counted at the next run"| STATE
+    classDef night fill:#eef2ff,stroke:#a5b4fc,color:#1e1b4b
+    classDef mem fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
+    classDef work fill:#fffbeb,stroke:#fcd34d,color:#78350f
+    classDef week fill:#f5f3ff,stroke:#c4b5fd,color:#4c1d95
+    classDef user fill:#f1f5f9,stroke:#cbd5e1,color:#0f172a
+    classDef muted fill:#ffffff,stroke:#cbd5e1,stroke-dasharray:4 3,color:#64748b
+    classDef out fill:#ffffff,stroke:#cbd5e1,color:#475569
+    style P fill:#f6fefa,stroke:#a7f3d0,color:#065f46
+    style A fill:#f8faff,stroke:#c7d2fe,color:#3730a3
 ```
+
+Project memory is `~/.claude/projects/<project>/memory`. `state/` (the ledger and the journal of runs, kept 60 days) and `backups/` sit in agent-reflect's own folder; the hook files are in `~/.claude/agent-reflect`.
 
 `MEMORY.md` is kept under 190 lines and 24,000 characters, inside the 25,000 bytes Claude Code loads of it, with at most 40 lines of agent-reflect's own. When it runs over, lesson lines leave first, lowest confidence and oldest first, and those lessons wait again; a lesson that blocks a command keeps its line, and your lines are never touched.
 
 ### The path of a lesson
 
 ```mermaid
-flowchart TB
-    NEW(["A new lesson"]) --> WAIT
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#94a3b8", "primaryColor": "#f1f5f9", "primaryBorderColor": "#cbd5e1", "primaryTextColor": "#0f172a", "clusterBkg": "#f8fafc", "clusterBorder": "#e2e8f0", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 28, "rankSpacing": 48, "padding": 14}}}%%
+flowchart LR
+    new(["A new lesson"]):::out --> wait
+    wait("<b>Waiting</b><br/>file, no index line"):::work
+    live("<b>In the index</b><br/>file and a line"):::mem
+    wait -->|"high, 2nd case or approve,<br/>if MEMORY.md has room"| live
+    live -.->|"index full,<br/>unless it blocks"| wait
+    live -->|"retire"| ret("<b>Retired</b><br/>file kept"):::muted
+    ret -.->|"happens again"| wait
 
-    subgraph MEM["In memory"]
-        WAIT["Waiting<br/>its file, no line in MEMORY.md"]
-        LIVE["In the index<br/>its file and a line in MEMORY.md"]
-        WAIT -->|"high confidence, a second case or approve,<br/>if MEMORY.md has room"| LIVE
-        LIVE -->|"MEMORY.md over its limits,<br/>unless it blocks a command"| WAIT
-    end
+    wait & live --> out{{"leaves memory"}}:::user
+    out -->|"2 sessions in 30 days<br/>or broken twice"| skill("<b>In a skill</b><br/>the hook still shows it"):::week
+    out -->|"weekly tidy"| gone("<b>Tidied away</b><br/>merged or stale"):::muted
+    out -->|"you delete it"| rej("<b>Rejected</b><br/>never written again"):::muted
+    out -->|"you edit it"| own("<b>Yours</b><br/>never edited again"):::muted
 
-    LIVE -->|"agent-reflect retire"| RET["Retired<br/>its file stays, no line"]
-    RET -->|"it happens again"| WAIT
-    RET -->|"approve, if MEMORY.md has room"| LIVE
-
-    WAIT --> OUT{"Leaves memory"}
-    LIVE --> OUT
-    OUT -->|"confirmed in 2 sessions within 30 days,<br/>or broken twice"| SKILL["In a skill<br/>no file; the hook still shows it;<br/>a verdict on the move after 30 days"]
-    OUT -->|"the weekly tidy,<br/>never a blocking lesson"| GONE["Tidied away<br/>merged or no longer true"]
-    OUT -->|"you delete its file,<br/>or the line of one in the index"| REJ["Rejected<br/>never written again"]
-    OUT -->|"you edit its file"| YOURS["Yours<br/>never edited again"]
+    classDef night fill:#eef2ff,stroke:#a5b4fc,color:#1e1b4b
+    classDef mem fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
+    classDef work fill:#fffbeb,stroke:#fcd34d,color:#78350f
+    classDef week fill:#f5f3ff,stroke:#c4b5fd,color:#4c1d95
+    classDef user fill:#f1f5f9,stroke:#cbd5e1,color:#0f172a
+    classDef muted fill:#ffffff,stroke:#cbd5e1,stroke-dasharray:4 3,color:#64748b
+    classDef out fill:#ffffff,stroke:#cbd5e1,color:#475569
 ```
 
 ### In the weekly digest
