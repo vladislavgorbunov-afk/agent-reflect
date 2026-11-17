@@ -20,46 +20,46 @@ agent-reflect does that bookkeeping. It reads what your sessions did, writes the
 ## How it works
 
 ```mermaid
-flowchart TB
-    T[("Session transcripts<br/>~/.claude/projects")]
+flowchart LR
+    T[("Session<br/>transcripts")]
 
-    subgraph N["Every night · reflect · Claude Sonnet"]
-        N1["Read the parts not read yet"] --> N2{"A failure, a hook block, your correction<br/>or interruption, a recovery?"}
-        N2 -- "no" --> N0["Never reaches the model"]
-        N2 -- "yes" --> N3["The model decides: nothing, a new lesson, a repeat,<br/>a lesson broken, or your own rule broken"]
-        N3 --> N4{"Quote found in the transcript,<br/>a second call agrees,<br/>concrete, not rejected before?"}
-        N4 -- "no" --> N5["Dropped"]
-        N4 -- "yes" --> N6["Lesson written into<br/>the project's memory"]
+    subgraph N["Every night · Claude Sonnet"]
+        direction TB
+        N1["Read the parts not read yet"] --> N2["Keep the moments: a failure, a hook block,<br/>your correction or interruption, a recovery"]
+        N2 --> N3["The model decides: nothing, a new lesson,<br/>a repeat, a lesson broken, your rule broken"]
+        N3 --> N4["Write only what passes: the quote is in<br/>the transcript, a second call agrees,<br/>concrete, not rejected before"]
     end
 
-    subgraph M["What Claude Code reads"]
-        MEM[("MEMORY.md and the memory files")]
+    subgraph M["Read by Claude Code"]
+        direction TB
+        MEM[("MEMORY.md and<br/>the memory files")]
         RULES[("Hook patterns")]
     end
 
     subgraph S["Every session"]
+        direction TB
         S1["Loads MEMORY.md at start"]
-        S2["The PreToolUse hook shows a lesson<br/>next to a matching command or file"]
+        S2["The PreToolUse hook shows a lesson<br/>at a matching command or file"]
     end
 
-    subgraph W["Once a week · consolidate · Claude Opus"]
-        W1["Proven lessons go into a skill or CLAUDE.md:<br/>in place with a backup, or a draft PR"]
-        W2["Duplicates merged, stale lessons dropped"]
+    subgraph W["Once a week · Claude Opus"]
+        direction TB
+        W1["Proven lessons into a skill or CLAUDE.md:<br/>in place with a backup, or a draft PR"]
+        W2["Duplicates merged,<br/>stale lessons dropped"]
         W3["Repeated corrections become<br/>lessons about how to work"]
     end
 
     T --> N1
-    N6 --> MEM
-    N6 --> RULES
+    N4 --> MEM
+    N4 --> RULES
     MEM --> S1
     RULES --> S2
-    S1 & S2 -.->|"new transcripts"| T
+    S -.->|"new transcripts"| T
     MEM --> W1
     MEM --> W2
-    T --> W3
     W3 --> MEM
-    N6 --> REP["reports/DATE.md and a notification"]
-    W --> DIG["digests/WEEK.md and a notification"]
+    N4 --> REP["reports/DATE.md<br/>and a notification"]
+    W --> DIG["digests/WEEK.md<br/>and a notification"]
 ```
 
 ## What it does
@@ -154,32 +154,27 @@ flowchart LR
 ### The path of a lesson
 
 ```mermaid
-stateDiagram-v2
-    state "waiting" as staged
-    state "in the index" as live
-    state "in a skill" as promoted
-    state "retired" as retired
-    state "tidied away" as removed
-    state "rejected" as rejected
-    state "yours" as owned
+flowchart TB
+    NEW(["A new lesson"]) --> WAIT
 
-    [*] --> staged: a new lesson
-    staged --> live: high confidence, a second case or approve, if MEMORY.md has room
-    live --> staged: MEMORY.md over its limits
-    live --> promoted: confirmed in 2 sessions within 30 days, or broken twice
-    staged --> promoted: the same, while MEMORY.md has no room for it
-    live --> retired: agent-reflect retire
-    retired --> staged: it happens again
-    retired --> live: approve, if MEMORY.md has room
-    live --> removed: the weekly tidy
-    staged --> removed: the weekly tidy
-    live --> rejected: you delete its file or its line
-    staged --> rejected: you delete its file
-    live --> owned: you edit its file
-    staged --> owned: you edit its file
+    subgraph MEM["In memory"]
+        WAIT["Waiting<br/>its file, no line in MEMORY.md"]
+        LIVE["In the index<br/>its file and a line in MEMORY.md"]
+        WAIT -->|"high confidence, a second case or approve,<br/>if MEMORY.md has room"| LIVE
+        LIVE -->|"MEMORY.md over its limits"| WAIT
+    end
+
+    LIVE -->|"agent-reflect retire"| RET["Retired<br/>its file stays, no line"]
+    RET -->|"it happens again"| WAIT
+    RET -->|"approve, if MEMORY.md has room"| LIVE
+
+    WAIT --> OUT{"Leaves memory"}
+    LIVE --> OUT
+    OUT -->|"confirmed in 2 sessions within 30 days,<br/>or broken twice"| SKILL["In a skill<br/>no file; the hook still shows it"]
+    OUT -->|"the weekly tidy"| GONE["Tidied away<br/>merged or no longer true"]
+    OUT -->|"you delete its file,<br/>or the line of one in the index"| REJ["Rejected<br/>never written again"]
+    OUT -->|"you edit its file"| YOURS["Yours<br/>never edited again"]
 ```
-
-A lesson in a skill has no memory file any more, but the hook still shows it when its pattern matches. A rejected lesson is never written again.
 
 ### In the weekly digest
 
