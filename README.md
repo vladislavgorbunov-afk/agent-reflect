@@ -49,7 +49,7 @@ flowchart LR
     subgraph W ["Once a week · Opus"]
         direction LR
         w1("<b>Moves proven lessons</b><br/>into a skill or CLAUDE.md:<br/>in place, or a draft PR"):::week
-        w2("<b>Judges the move</b><br/>30 days later: helped or not"):::week
+        w2("<b>Judges the move</b><br/>30 days later:<br/>helped or not"):::week
         w3("<b>Tidies</b><br/>merges duplicates,<br/>drops stale lessons"):::week
         w4("<b>Learns from corrections</b><br/>3+ of one kind become<br/>a lesson about how to work"):::week
         w5("<b>Writes the digest</b><br/>digests/WEEK.md<br/>and a notification"):::out
@@ -59,17 +59,18 @@ flowchart LR
     M --> S
     M <--> W
 
-    classDef night fill:#eef2ff,stroke:#a5b4fc,color:#1e1b4b
-    classDef mem fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
-    classDef work fill:#fffbeb,stroke:#fcd34d,color:#78350f
-    classDef week fill:#f5f3ff,stroke:#c4b5fd,color:#4c1d95
-    classDef user fill:#f1f5f9,stroke:#cbd5e1,color:#0f172a
-    classDef muted fill:#ffffff,stroke:#cbd5e1,stroke-dasharray:4 3,color:#64748b
-    classDef out fill:#ffffff,stroke:#cbd5e1,color:#475569
-    style N fill:#f8faff,stroke:#c7d2fe,color:#3730a3
-    style M fill:#f6fefa,stroke:#a7f3d0,color:#065f46
-    style S fill:#fffdf5,stroke:#fde68a,color:#92400e
-    style W fill:#faf8ff,stroke:#ddd6fe,color:#5b21b6
+    classDef night fill:#eef2ff,stroke:#a5b4fc,color:#1e1b4b,font-family:system-ui
+    classDef mem fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b,font-family:system-ui
+    classDef work fill:#fffbeb,stroke:#fcd34d,color:#78350f,font-family:system-ui
+    classDef week fill:#f5f3ff,stroke:#c4b5fd,color:#4c1d95,font-family:system-ui
+    classDef user fill:#f1f5f9,stroke:#cbd5e1,color:#0f172a,font-family:system-ui
+    classDef muted fill:#ffffff,stroke:#cbd5e1,stroke-dasharray:4 3,color:#64748b,font-family:system-ui
+    classDef out fill:#ffffff,stroke:#cbd5e1,color:#475569,font-family:system-ui
+    style N fill:#f8faff,stroke:#c7d2fe,color:#3730a3,font-family:system-ui,font-size:13px
+    style M fill:#f6fefa,stroke:#a7f3d0,color:#065f46,font-family:system-ui,font-size:13px
+    style S fill:#fffdf5,stroke:#fde68a,color:#92400e,font-family:system-ui,font-size:13px
+    style W fill:#faf8ff,stroke:#ddd6fe,color:#5b21b6,font-family:system-ui,font-size:13px
+    linkStyle default font-family:system-ui
 ```
 
 ## What it does
@@ -157,15 +158,16 @@ flowchart LR
 
     live & wait -.->|"tracked in"| st
 
-    classDef night fill:#eef2ff,stroke:#a5b4fc,color:#1e1b4b
-    classDef mem fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
-    classDef work fill:#fffbeb,stroke:#fcd34d,color:#78350f
-    classDef week fill:#f5f3ff,stroke:#c4b5fd,color:#4c1d95
-    classDef user fill:#f1f5f9,stroke:#cbd5e1,color:#0f172a
-    classDef muted fill:#ffffff,stroke:#cbd5e1,stroke-dasharray:4 3,color:#64748b
-    classDef out fill:#ffffff,stroke:#cbd5e1,color:#475569
-    style P fill:#f6fefa,stroke:#a7f3d0,color:#065f46
-    style A fill:#f8faff,stroke:#c7d2fe,color:#3730a3
+    classDef night fill:#eef2ff,stroke:#a5b4fc,color:#1e1b4b,font-family:system-ui
+    classDef mem fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b,font-family:system-ui
+    classDef work fill:#fffbeb,stroke:#fcd34d,color:#78350f,font-family:system-ui
+    classDef week fill:#f5f3ff,stroke:#c4b5fd,color:#4c1d95,font-family:system-ui
+    classDef user fill:#f1f5f9,stroke:#cbd5e1,color:#0f172a,font-family:system-ui
+    classDef muted fill:#ffffff,stroke:#cbd5e1,stroke-dasharray:4 3,color:#64748b,font-family:system-ui
+    classDef out fill:#ffffff,stroke:#cbd5e1,color:#475569,font-family:system-ui
+    style P fill:#f6fefa,stroke:#a7f3d0,color:#065f46,font-family:system-ui,font-size:13px
+    style A fill:#f8faff,stroke:#c7d2fe,color:#3730a3,font-family:system-ui,font-size:13px
+    linkStyle default font-family:system-ui
 ```
 
 Project memory is `~/.claude/projects/<project>/memory`. `state/` (the ledger and the journal of runs, kept 60 days) and `backups/` sit in agent-reflect's own folder; the hook files are in `~/.claude/agent-reflect`.
@@ -191,13 +193,14 @@ flowchart LR
     out -->|"you delete it"| rej("<b>Rejected</b><br/>never written again"):::muted
     out -->|"you edit it"| own("<b>Yours</b><br/>never edited again"):::muted
 
-    classDef night fill:#eef2ff,stroke:#a5b4fc,color:#1e1b4b
-    classDef mem fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
-    classDef work fill:#fffbeb,stroke:#fcd34d,color:#78350f
-    classDef week fill:#f5f3ff,stroke:#c4b5fd,color:#4c1d95
-    classDef user fill:#f1f5f9,stroke:#cbd5e1,color:#0f172a
-    classDef muted fill:#ffffff,stroke:#cbd5e1,stroke-dasharray:4 3,color:#64748b
-    classDef out fill:#ffffff,stroke:#cbd5e1,color:#475569
+    classDef night fill:#eef2ff,stroke:#a5b4fc,color:#1e1b4b,font-family:system-ui
+    classDef mem fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b,font-family:system-ui
+    classDef work fill:#fffbeb,stroke:#fcd34d,color:#78350f,font-family:system-ui
+    classDef week fill:#f5f3ff,stroke:#c4b5fd,color:#4c1d95,font-family:system-ui
+    classDef user fill:#f1f5f9,stroke:#cbd5e1,color:#0f172a,font-family:system-ui
+    classDef muted fill:#ffffff,stroke:#cbd5e1,stroke-dasharray:4 3,color:#64748b,font-family:system-ui
+    classDef out fill:#ffffff,stroke:#cbd5e1,color:#475569,font-family:system-ui
+    linkStyle default font-family:system-ui
 ```
 
 ### In the weekly digest
