@@ -17,6 +17,51 @@ agent-reflect does that bookkeeping. It reads what your sessions did, writes the
 - **Skills that grow from evidence.** Only lessons confirmed across sessions reach a skill, through a draft PR you review.
 - **Failures you would not see otherwise.** A hook that fails on every call, API errors the CLI retried until it gave up: counted and reported.
 
+## How it works
+
+```mermaid
+flowchart TB
+    T[("Session transcripts<br/>~/.claude/projects")]
+
+    subgraph N["Every night · reflect · Claude Sonnet"]
+        N1["Read the parts not read yet"] --> N2{"A failure, a hook block, your correction<br/>or interruption, a recovery?"}
+        N2 -- "no" --> N0["Never reaches the model"]
+        N2 -- "yes" --> N3["The model decides: nothing, a new lesson, a repeat,<br/>a lesson broken, or your own rule broken"]
+        N3 --> N4{"Quote found in the transcript,<br/>a second call agrees,<br/>concrete, not rejected before?"}
+        N4 -- "no" --> N5["Dropped"]
+        N4 -- "yes" --> N6["Lesson written into<br/>the project's memory"]
+    end
+
+    subgraph M["What Claude Code reads"]
+        MEM[("MEMORY.md and the memory files")]
+        RULES[("Hook patterns")]
+    end
+
+    subgraph S["Every session"]
+        S1["Loads MEMORY.md at start"]
+        S2["The PreToolUse hook shows a lesson<br/>next to a matching command or file"]
+    end
+
+    subgraph W["Once a week · consolidate · Claude Opus"]
+        W1["Proven lessons go into a skill or CLAUDE.md:<br/>in place with a backup, or a draft PR"]
+        W2["Duplicates merged, stale lessons dropped"]
+        W3["Repeated corrections become<br/>lessons about how to work"]
+    end
+
+    T --> N1
+    N6 --> MEM
+    N6 --> RULES
+    MEM --> S1
+    RULES --> S2
+    S1 & S2 -.->|"new transcripts"| T
+    MEM --> W1
+    MEM --> W2
+    T --> W3
+    W3 --> MEM
+    N6 --> REP["reports/DATE.md and a notification"]
+    W --> DIG["digests/WEEK.md and a notification"]
+```
+
 ## What it does
 
 ### Every night (03:30, and at login)
@@ -60,7 +105,7 @@ The hook never blocks anything: it reminds. Every showing is counted, so the dig
 - **Tidies memory.** Merges lessons that say the same thing and removes ones that no longer hold, at most a quarter of the lessons per run. For memory entries you wrote yourself it only suggests changes.
 - **Learns from repeated corrections.** Groups your corrections from the last 30 days. Three or more of one kind from at least two sessions become a lesson about how to work, at most two per project a week.
 - **Looks after the lessons.** Names lessons that sat in the index for 30 days with no reads, hook showings or repeats (`agent-reflect retire` takes the line out and keeps the file), and lessons the agent keeps breaking that still have no trigger.
-- **Writes the digest.** `digests/<week>.md` and a notification: new and broken lessons, what moved into skills, the PRs, work sent back per 100 replies next to the baseline, memory files no agent opened in 30 days, silent failures, cost.
+- **Writes the digest.** `digests/<week>.md` and a notification: new and broken lessons, what moved into skills, the PRs, work sent back per 100 replies next to the baseline, a map of each project's memory (see [Memory](#memory)), memory files no agent opened in 30 days, silent failures, cost.
 
 ### Silent failures
 
@@ -72,6 +117,115 @@ Without calling a model, every run also counts hook failures and API errors that
 - Repositories are changed only through draft PRs, and only the ones you list in the config.
 - Apart from those PRs, the only thing that leaves your machine is the model calls, made through your own `claude` CLI. Secrets in transcripts (tokens, keys, passwords) are masked before the model sees them and before anything is written.
 - A weekly run can be undone with `agent-reflect rollback <RUN_ID>`, and `agent-reflect reflect --dry-run` shows what a night would do without writing.
+
+## Memory
+
+### Where it lives
+
+```mermaid
+flowchart LR
+    subgraph P["~/.claude/projects/PROJECT/memory · what Claude Code reads"]
+        IDX["MEMORY.md<br/>loaded whole into every session"]
+        YOURS["Your memory files<br/>never edited by agent-reflect"]
+        LIVE["auto_ID.md in the index<br/>every session sees its line"]
+        WAIT["auto_ID.md with no line<br/>waiting or retired, no session sees it"]
+        IDX -->|"your lines"| YOURS
+        IDX -->|"lesson lines, at most 40"| LIVE
+    end
+
+    subgraph AR["agent-reflect's own files"]
+        STATE["state/state.json<br/>every lesson: status, evidence, repeats,<br/>breaks, reads, hook showings"]
+        JOURNAL["state/journal.jsonl<br/>runs and decisions, 60 days"]
+        BACKUPS["backups/<br/>memory and skill edits, for rollback"]
+    end
+
+    RULES["~/.claude/agent-reflect/guard-rules.json<br/>patterns of lessons in the index or in a skill,<br/>and your own rules"]
+    HOOK["PreToolUse hook"]
+
+    STATE -.->|"tracks"| LIVE
+    STATE -.->|"tracks"| WAIT
+    STATE -->|"writes"| RULES
+    RULES --> HOOK
+    HOOK -->|"logs each showing, counted at the next run"| STATE
+```
+
+`MEMORY.md` is kept under 190 lines and 24,000 characters, inside the 25,000 bytes Claude Code loads of it, with at most 40 lines of agent-reflect's own. When it runs over, lesson lines leave first, lowest confidence and oldest first, and those lessons wait again; your lines are never touched.
+
+### The path of a lesson
+
+```mermaid
+stateDiagram-v2
+    state "waiting" as staged
+    state "in the index" as live
+    state "in a skill" as promoted
+    state "retired" as retired
+    state "tidied away" as removed
+    state "rejected" as rejected
+    state "yours" as owned
+
+    [*] --> staged: a new lesson
+    staged --> live: high confidence, a second case or approve, if MEMORY.md has room
+    live --> staged: MEMORY.md over its limits
+    live --> promoted: confirmed in 2 sessions within 30 days, or broken twice
+    staged --> promoted: the same, while MEMORY.md has no room for it
+    live --> retired: agent-reflect retire
+    retired --> staged: it happens again
+    retired --> live: approve, if MEMORY.md has room
+    live --> removed: the weekly tidy
+    staged --> removed: the weekly tidy
+    live --> rejected: you delete its file or its line
+    staged --> rejected: you delete its file
+    live --> owned: you edit its file
+    staged --> owned: you edit its file
+```
+
+A lesson in a skill has no memory file any more, but the hook still shows it when its pattern matches. A rejected lesson is never written again.
+
+### In the weekly digest
+
+Every digest draws this map for each project with lessons, with the project's own numbers:
+
+```text
+🧠 webapp
+┌─ MEMORY.md · every session loads it whole ──────────┐
+│ 18 lines of yours          6 lesson lines of 40     │
+└───┬──────────────────────────┬──────────────────────┘
+    │                          │
+    ▼                          ▼
+  18 files of yours          6 auto_*.md in the index
+  5 not opened in 30 days    2 with a hook pattern
+                             4 without one
+                             + 2 auto_*.md with no line: wait for a second case
+
+lesson path                                           now  this week
+  the night's reading · corrections repeated over the week
+          │ a new lesson
+          ▼
+  ┌──────────────┐
+  │ waiting      │  a file with no line in MEMORY.md    2         +3
+  └───────┬──────┘
+          │ high confidence, a second case or your approve,
+          │ and MEMORY.md has room
+          ▼
+  ┌──────────────┐
+  │ in the index │  a line in MEMORY.md                 6         +1
+  └───────┬──────┘
+          │ confirmed in 2 sessions within 30 days, or broken 2 times
+          ▼
+  ┌──────────────┐
+  │ in a skill   │  a rule in a skill or CLAUDE.md      3         +1
+  └──────────────┘
+  aside: retired 0 · tidied away 1 · rejected by you 1 · yours now 0
+  back to waiting: MEMORY.md over its limits · a retired lesson happens again
+
+🗃 MEMORY.md · webapp
+   chars    █░░░░░░░░░░░░░░░░░░░  3%
+   bytes    █░░░░░░░░░░░░░░░░░░░  3%
+   lines    ███░░░░░░░░░░░░░░░░░  14%
+   lessons  ███░░░░░░░░░░░░░░░░░  6 of 40
+```
+
+"This week" counts the lessons that came into a step on the digest's days; "with no line" files and links to missing files are memory the agent never sees.
 
 ## Requirements
 

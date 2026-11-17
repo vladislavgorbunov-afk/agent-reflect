@@ -2,6 +2,8 @@
 
 Local macOS tool that reflects on Claude Code session transcripts and writes lessons into memory.
 What it does and how it is configured: `README.md`.
+The README's diagrams describe the code: change them with it. Its sample of the digest's memory map is what
+`agent_reflect/memory_map.py` draws, and `tests/test_memory_map.py` fails when the two drift apart.
 
 ## Commands
 

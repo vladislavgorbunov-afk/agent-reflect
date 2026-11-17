@@ -11,7 +11,7 @@ from datetime import date
 
 import pytest
 
-from agent_reflect import chart, digest, health, i18n, recent, usage
+from agent_reflect import chart, digest, health, i18n, memory_map, recent, usage
 from test_consolidate import FakeLlm, _plan, env  # noqa: F401  (env is a fixture used by name)
 from test_consolidate import _lesson as consolidate_lesson, _run as consolidate_run
 from test_delivery import BASELINE
@@ -144,7 +144,9 @@ def test_the_weekly_digest_in_english_has_every_section_and_no_russian(busy, eng
     lessons = {"ab12cd34": _latin(make_lesson(violations=2, trigger="timeout", fires=3))}
     block = digest.week_block(busy.cfg, busy.state.lessons, busy.records, date(2026, 10, 20), date(2026, 10, 23),
                               date(2026, 10, 20), LOCAL)
-    text = digest.render(_week_summary(), lessons, "2026-W43", busy.cfg, chart=block)
+    memory = memory_map.block(busy.cfg, busy.state.lessons, _week_summary()["memory_reads"], date(2026, 10, 20),
+                              date(2026, 10, 23), LOCAL)
+    text = digest.render(_week_summary(), lessons, "2026-W43", busy.cfg, chart=block, memory=memory)
     assert _cyrillic(text) == []
     for seen in ("# agent-reflect — week 2026-W43", "Total: 1 lesson, 2 skills, 1 PR", "## 📊 Week · 20–23 October",
                  "Segments with no project skipped: 4", "## 🆕 New lessons · 1", "repeats: 3", "When: ",
@@ -157,7 +159,9 @@ def test_the_weekly_digest_in_english_has_every_section_and_no_russian(busy, eng
                  "## 🧹 Lesson care · 2", "50 days in the index", "and it has no hook pattern",
                  "## Lesson reads", "Lesson reads by the agent: 0", "shown by the hook: 3 times", "UserPromptSubmit",
                  "## Memory: not opened in 30 days", "2 of 4 files never opened", "Opened most: ",
-                 "🔁 work sent back: ", "💸 model: 3 calls", "🗃 MEMORY.md · webapp", "chars    ", "~4.6k bytes left", "lessons  ", " 2 of 40"):
+                 "🔁 work sent back: ", "💸 model: 3 calls", "🗃 MEMORY.md · webapp", "chars    ", "~4.6k bytes left", "lessons  ", " 2 of 40",
+                 "## 🧠 Memory", "─ MEMORY.md · every session loads it whole ─", "lesson path", "in the index",
+                 "+ 1 auto_*.md with no line: waits for a second case", "back to waiting: "):
         assert seen in text, seen
 
 

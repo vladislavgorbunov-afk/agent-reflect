@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from . import (
-    baseline, chart, consolidate, cursor_index, digest, guard, install as launchd, journal, memory_archive, recent, reflect,
+    baseline, chart, consolidate, cursor_index, digest, guard, install as launchd, journal, memory_archive, memory_map,
+    recent, reflect,
     i18n, skills,
 )
 from .config import RUN_ID_FORMAT, Config, ConfigError, is_run_id
@@ -228,6 +229,15 @@ def _week_chart(cfg: Config, state: State, first: date, last: date) -> list[str]
         return []
 
 
+def _memory_chart(cfg: Config, state: State, summary: dict, first: date, last: date) -> list[str]:
+    """The digest's map of memory. A bug in the drawing leaves it out: the digest is written without it."""
+    try:
+        return memory_map.block(cfg, state.lessons, summary.get("memory_reads"), first, last)
+    except Exception as exc:
+        log.error("memory map not drawn: %s", error_text(exc))
+        return []
+
+
 def _cmd_consolidate(cfg: Config, args: argparse.Namespace) -> int:
     # launchd launches this daily: a tick that is not due takes no lock, writes no log and no state
     if not args.force and not args.dry_run and not _consolidate_due(cfg):
@@ -257,7 +267,7 @@ def _cmd_consolidate(cfg: Config, args: argparse.Namespace) -> int:
             first, last = _week_days(since, now)
             path = digest.free_path(cfg, week)  # a second digest of the week keeps the first
             text = digest.render(summary, state.lessons, week, cfg, chart=_week_chart(cfg, state, first, last),
-                                 path=path)
+                                 memory=_memory_chart(cfg, state, summary, first, last), path=path)
             digest.write(cfg, text, week, path)
             title, subtitle, message = digest.notice(summary, first, last)
             digest.notify(message, path, title=title, subtitle=subtitle, group=digest.WEEK_GROUP)

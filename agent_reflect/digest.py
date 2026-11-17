@@ -350,9 +350,10 @@ def baseline_line(baseline: dict | None, detector: int) -> str:
 
 def week_block(cfg: Config, lessons: dict[str, Lesson], records: list[dict], first: date, last: date,
                installed: date | None, tz: tzinfo | None = None) -> list[str]:
-    """The runs chart of the days from `first` to `last`, with live lessons and MEMORY.md, as a ```text block.
+    """The runs chart of the days from `first` to `last`, with live lessons, returned work and cost, as a ```text block.
 
     `first` is the day of the previous consolidate: the digest covers the days since. `records` are the journal's.
+    How full MEMORY.md is goes in the memory section (memory_map.block).
     """
     counts = chart.day_counts(records, tz)
     rows = chart.day_rows(counts, first, last, installed)
@@ -361,10 +362,7 @@ def week_block(cfg: Config, lessons: dict[str, Lesson], records: list[dict], fir
     rows += chart.error_notes(counts, first, last)
     days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
     live = chart.live_line(lessons, [day for day in days if installed is None or day >= installed], tz, records)
-    gauges: list[str] = []
-    for line in chart.memory_gauges(cfg, lessons, detailed=True):
-        gauges += ["", line] if gauges and line.startswith("🗃") else [line]  # a blank line between projects
-    out = [t("## 📊 Week · ", "## 📊 Неделя · ") + chart.period_phrase(first, last), "", "```text", *rows]
+    out =[t("## 📊 Week · ", "## 📊 Неделя · ") + chart.period_phrase(first, last), "", "```text", *rows]
     if live:
         out += ["", live]
     if returned := episodes_line(records, first, last, tz):
@@ -375,14 +373,12 @@ def week_block(cfg: Config, lessons: dict[str, Lesson], records: list[dict], fir
                and first <= at.astimezone(tz).date() <= last]
     if cost := chart.spent_line(in_week):
         out += ["", cost]
-    if gauges:
-        out += ["", *gauges]
     return out + ["```"]
 
 
 def render(summary: dict, lessons: dict[str, Lesson], week: str, cfg: Config | None = None, *,
-           chart: list[str] = (), path: Path | None = None) -> str:
-    """The digest of `week`, with the `chart` block below its total.
+           chart: list[str] = (), memory: list[str] = (), path: Path | None = None) -> str:
+    """The digest of `week`, with the `chart` block below its total and the `memory` section below the chart.
 
     `cfg` names the files it points to (the installed tool's when None); `path` is where the digest is
     written (the week's file when None), the file the upstream candidates line sends the agent to.
@@ -411,6 +407,8 @@ def render(summary: dict, lessons: dict[str, Lesson], week: str, cfg: Config | N
                 + str(summary["skipped_no_project"]), ""]
     if chart:
         out += [*chart, ""]
+    if memory:
+        out += [*memory, ""]
     for key, emoji, title, _ in SECTIONS:
         out += [f"## {emoji} {t(*title)} · {len(items[key])}", ""] + (lines[key] or [_DASH]) + [""]
     extra = {
