@@ -157,10 +157,12 @@ A model call reads about 50k tokens. The night's report and the weekly digest sh
 
 ```bash
 uv sync
-uv run pytest -q
+uv run --locked pytest -q
 ```
 
 Tests never call the real `claude`, `gh`, `launchctl` or `terminal-notifier`.
+
+Changes land through a pull request into `master`. The `tests` check (`.github/workflows/pr-checks.yml`) must pass on a branch that carries the latest `master`: the repository ruleset on `master` requires it and allows no direct or force push.
 
 ## License
 

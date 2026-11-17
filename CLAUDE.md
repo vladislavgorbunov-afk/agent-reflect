@@ -7,12 +7,16 @@ What it does and how it is configured: `README.md`.
 
 ```bash
 uv sync
-uv run pytest -q
+uv run --locked pytest -q
 ```
 
 ## Gating rule
 
-Every commit must pass `uv run pytest -q`.
+Every commit must pass `uv run --locked pytest -q` (`--locked`: a dependency change that did not update `uv.lock` fails here, as it does in CI).
+
+Changes land through a pull request into `master`, never a direct push: the ruleset on `master` requires the `tests` check (`.github/workflows/pr-checks.yml`, the same `uv run --locked pytest -q` on macOS) on a branch that carries the latest `master`.
+
+If GitHub Actions is down, the check never starts and nothing can be merged. For an urgent merge the owner turns the ruleset off (Settings → Rules → Rulesets → `master` → Enforcement status: Disabled, or `gh api -X PUT repos/vladislavgorbunov-afk/agent-reflect/rulesets/27454875 -f enforcement=disabled`, which keeps its rules), merges, and turns it back on at once (`-f enforcement=active`): while it is off, nothing stops a direct push, a force push or deleting `master`.
 
 ## Tests
 
