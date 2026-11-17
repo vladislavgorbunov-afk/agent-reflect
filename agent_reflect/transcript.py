@@ -98,6 +98,7 @@ class Signal:
     # the whole shell command of the call, for matching a lesson's trigger; never shown to the model
     command: str = ""
     seq: int = 0  # its place among the segment's signals and turns, in the order they happened
+    called: str | None = None  # when the agent made the call, as against `ts`, when its result came
 
 
 @dataclass(frozen=True)
@@ -552,6 +553,7 @@ def read_segment(path: Path, start: int) -> Segment:
     cwd: str | None = None
     first_ts = last_ts = None
     uses: dict[str, tuple[str, str]] = {}
+    called: dict[str, str | None] = {}  # tool_use id -> when the assistant message that made the call was written
     commands: dict[str, str] = {}  # tool_use id -> a shell command, as it was given
     full_inputs: dict[str, str] = {}  # tool_use id -> its whole input, for the recovery contrast
     # the failing results since the last fix or the user's word: (index in raw, tool, call, program)
@@ -605,6 +607,7 @@ def read_segment(path: Path, start: int) -> Segment:
                 if b.get("type") == "tool_use":
                     work[b.get("name", "") or "?"] += 1
                     uses[b.get("id", "")] = (b.get("name", ""), _tool_input(b.get("input", {})))
+                    called[b.get("id", "")] = ts
                     full_inputs[b.get("id", "")] = _same_input(b.get("name", ""), b.get("input", {}))
                     reads.extend(LessonRead(lid, ts, pos) for lid in lesson_ids(b.get("name", ""), b.get("input")))
                     wrote = _edited_file(b.get("name", ""), b.get("input"))
@@ -656,6 +659,7 @@ def read_segment(path: Path, start: int) -> Segment:
                 seq += 1
                 rec["seq"] = seq
                 rec["command"] = _clip(command, _COMMAND_MAX)
+                rec["called"] = called.get(use_id)
                 raw.append(rec)
                 awaiting.append(rec)
             if subagent or not _typed_by_user(e):

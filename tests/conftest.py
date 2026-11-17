@@ -18,6 +18,8 @@ def _russian_by_default(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(i18n, "global_prefs", lambda: missing)
     for var in ("LC_ALL", "LC_MESSAGES", "LANG"):
         monkeypatch.delenv(var, raising=False)
+    # a suite run from a Claude Code shell is still the user's: a test that needs the agent sets it itself
+    monkeypatch.delenv("CLAUDECODE", raising=False)
     i18n.use("ru")
     yield
     i18n.use(i18n.DEFAULT)

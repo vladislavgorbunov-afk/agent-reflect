@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_reflect.scrub import scrub
@@ -98,6 +99,24 @@ def pr_state(repo: Path, url: str, token: str, run=subprocess.run) -> str:
     if state not in _STATES:
         raise GitError(f"gh pr view returned unexpected state: {str(state)[:40]}")
     return state
+
+
+def pr_merged_at(repo: Path, url: str, token: str, run=subprocess.run) -> str | None:
+    """When the PR was merged, as YYYY-MM-DDTHH:MM:SSZ, or None when GitHub gives no time."""
+    out = _exec(["gh", "pr", "view", url, "--json", "mergedAt"], run, cwd=repo, env=_gh_env(token))
+    try:
+        value = json.loads(out).get("mergedAt")
+    except (ValueError, AttributeError):
+        raise GitError("gh pr view returned unparseable output") from None
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        when = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def file_at_origin_main(repo: Path, rel_path: str, run=subprocess.run) -> str:

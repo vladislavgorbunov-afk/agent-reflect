@@ -31,7 +31,7 @@ SEGMENT_EN, SEGMENT_RU = ("segment", "segments"), ("отрезок", "отрез
 _COLOURS = (
     ("⬜", ("nothing", "ничего"), ("no_entry", "rejected_cue", "rejected_not_concrete", "rejected_bad_quote",
                                    "rejected_unsupported")),
-    ("🟦", ("repeat", "повтор"), ("repeat",)),
+    ("🟦", ("repeat", "повтор"), ("repeat", "after_promotion")),
     ("🟩", ("new lesson", "новый урок"), ("new_live", "new_staged")),
     ("🟪", ("lesson broken", "нарушен урок"), ("violated",)),
     ("🟧", ("your rule", "твоё правило"), ("user_rule_repeat",)),

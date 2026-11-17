@@ -2,8 +2,9 @@
 
 A lesson with a trigger (a regex over a shell command) is shown to the agent by
 `guard_hook.py` when it runs such a command; one with a path trigger (a regex over a file's
-path) when it is about to edit such a file. The user's own rules (`guard add`) are shown the
-same way. This module keeps the hook's rules file in step with the ledger, counts the hook's
+path) when it is about to edit such a file; one with an error trigger (a regex over what a
+failed shell command printed) right after such a failure. The user's own rules (`guard add`)
+are shown the same way. This module keeps the hook's rules file in step with the ledger, counts the hook's
 fires, and wires the hook into the user's Claude Code settings.
 """
 from __future__ import annotations
@@ -20,17 +21,33 @@ from agent_reflect.projects import sanitize
 from agent_reflect.promptkit import squash
 
 RULES_NAME = "guard-rules.json"
+# there while some rule is over an error: the after-Bash hook starts Python only then
+ERROR_RULES_MARK = "guard-error-rules"
 FIRES_NAME = "guard-fires.jsonl"
 # a lesson the agent has in its index, or one already moved into a skill: both are trusted
 ACTIVE = ("live", "promoted")
 TEXT_MAX = 500
+FIRED_SESSIONS_MAX = 50
+FIRE_TIMES_MAX = 20
 TRIGGER_MAX = 200
 HOOK_MARK = "agent_reflect/guard_hook.py"  # what tells our entry in settings.json from the user's
 HOOK_MATCHER = "^(Bash|Edit|Write|NotebookEdit)$"
+# after a shell command: what it printed is matched against the error triggers
+AFTER_EVENTS = ("PostToolUse", "PostToolUseFailure")
+AFTER_MATCHER = "^Bash$"
+ON = ("command", "path", "error")
 USER_PREFIX = "user:"  # the id of a rule the user added by hand, in the rules file and the fires log
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")
 # paths no trigger may match: one that does says nothing about which file it is
 _ANY_FILE = ("/Users/x/project/README.md", "/tmp/notes.txt", "/Users/x/project/src/main.py")
+# what any failure prints: an error trigger that matches one of these says nothing about which mistake it is
+_ANY_FAILURE = ("", "error", "Error: failed", "failed", "Exit code 1", "Traceback (most recent call last):",
+                "command failed with exit code 2", "Permission denied", "No such file or directory",
+                "command not found", "fatal: not a git repository")
+
+
+def matches_any_failure(pattern: re.Pattern) -> bool:
+    return any(pattern.search(text) for text in _ANY_FAILURE)
 
 
 def guard_dir(cfg: Config) -> Path:
@@ -53,19 +70,23 @@ def _compiles(pattern: str) -> bool:
 def rules(state: State) -> list[dict]:
     """A rule per trigger that compiles: of every trusted lesson, then of the user's own rules.
 
-    `on` says what the pattern is matched against: a shell command or the path of a file being edited.
+    `on` says what the pattern is matched against: a shell command, the path of a file being
+    edited, or what a failed shell command printed.
     """
     out = []
     for lesson in sorted(state.lessons.values(), key=lambda item: item.id):
         if lesson.status not in ACTIVE:
             continue
-        for on, pattern in (("command", lesson.trigger), ("path", lesson.path_trigger)):
+        for on, pattern in lesson.patterns():
             if _compiles(pattern):
-                out.append({"id": lesson.id, "file": lesson.file, "project": lesson.project_root,
-                            "slug": sanitize(lesson.project_root), "on": on, "pattern": pattern,
-                            "text": squash(lesson.lesson)[:TEXT_MAX]})
+                rule = {"id": lesson.id, "file": lesson.file, "project": lesson.project_root,
+                        "slug": sanitize(lesson.project_root), "on": on, "pattern": pattern,
+                        "text": squash(lesson.lesson)[:TEXT_MAX]}
+                if on == "command" and lesson.block:
+                    rule["block"] = True
+                out.append(rule)
     for rule in state.user_guards:
-        if not isinstance(rule, dict) or rule.get("on") not in ("command", "path"):
+        if not isinstance(rule, dict) or rule.get("on") not in ON:
             continue
         pattern, project = str(rule.get("pattern") or ""), str(rule.get("project") or "")
         if _compiles(pattern):
@@ -97,9 +118,19 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def sync(cfg: Config, state: State) -> bool:
-    """Write the hook's rules file when the rules changed; True when it was written."""
+    """Write the hook's rules file when the rules changed; True when it was written.
+
+    The error-rules mark follows: the after-Bash hook runs only while it is there.
+    """
     path = guard_dir(cfg) / RULES_NAME
-    text = json.dumps({"rules": rules(state)}, ensure_ascii=False, indent=1) + "\n"
+    current = rules(state)
+    mark = guard_dir(cfg) / ERROR_RULES_MARK
+    if any(rule["on"] == "error" for rule in current):
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.touch()
+    else:
+        mark.unlink(missing_ok=True)
+    text = json.dumps({"rules": current}, ensure_ascii=False, indent=1) + "\n"
     try:
         if path.read_text(encoding="utf-8") == text:
             return False
@@ -145,6 +176,15 @@ def merge_fires(cfg: Config, state: State) -> int:
         lesson = state.lessons.get(fired)
         if lesson is None:
             continue
+        session = str(entry.get("session") or "")
+        if entry.get("on", "command") == "command" and session and isinstance(ts, str):
+            times = lesson.fire_times.pop(session, [])  # popped and put back: the dict keeps the latest last
+            lesson.fire_times[session] = [*times, ts][-FIRE_TIMES_MAX:]
+            while len(lesson.fire_times) > FIRED_SESSIONS_MAX:
+                lesson.fire_times.pop(next(iter(lesson.fire_times)))
+        if entry.get("blocked") is True:
+            state.event("lesson_blocked", project=lesson.project_root, session=session, lesson_id=lesson.id,
+                        title=lesson.title)
         lesson.fires += 1
         if later(lesson.last_fired_at):
             lesson.last_fired_at = ts
@@ -154,7 +194,8 @@ def merge_fires(cfg: Config, state: State) -> int:
 
 
 def check_trigger(trigger: str, on: str = "command") -> str:
-    """Why a trigger cannot be used for commands (or for file paths, `on="path"`), or "" when it can."""
+    """Why a trigger cannot be used for commands (or file paths, `on="path"`, or the output of a
+    failed command, `on="error"`), or "" when it can."""
     if not trigger:
         return "empty"
     if len(trigger) > TRIGGER_MAX:
@@ -167,6 +208,8 @@ def check_trigger(trigger: str, on: str = "command") -> str:
         # an extension alone (no folder in the pattern) is every such file of every project
         broad = "/" not in trigger or pattern.search("") or any(pattern.search(p) for p in _ANY_FILE)
         return "matches any file" if broad else ""
+    if on == "error":
+        return "matches any failure" if matches_any_failure(pattern) else ""
     if pattern.search("") or pattern.search("ls"):
         return "matches any command"
     return ""
@@ -187,19 +230,34 @@ def _is_ours(entry) -> bool:
         isinstance(h, dict) and HOOK_MARK in str(h.get("command", "")) for h in entry.get("hooks") or [])
 
 
+def _our_entries(cfg: Config) -> dict[str, dict]:
+    """Our entry for each event: before a tool runs (shell commands and edits), after a shell command.
+
+    After a shell command the hook starts only while some rule is over an error: a shell test is
+    cheap, Python's start after every command is not.
+    """
+    hook = {"type": "command", "command": hook_command(cfg), "timeout": 5}
+    after = {**hook, "command": f'test -e "{guard_dir(cfg) / ERROR_RULES_MARK}" && ' + hook_command(cfg)}
+    return {"PreToolUse": {"matcher": HOOK_MATCHER, "hooks": [hook]},
+            **{event: {"matcher": AFTER_MATCHER, "hooks": [dict(after)]} for event in AFTER_EVENTS}}
+
+
 def install_hook(cfg: Config) -> bool:
     """Add the guard hook to the user's settings.json, keeping everything else; True when it changed."""
     path = cfg.claude_settings
     settings = _load_settings(path)
     hooks = settings.setdefault("hooks", {})
-    entries = hooks.setdefault("PreToolUse", [])
-    ours = {"matcher": HOOK_MATCHER, "hooks": [{"type": "command", "command": hook_command(cfg), "timeout": 5}]}
-    kept = [e for e in entries if not _is_ours(e)]
-    if len(kept) == len(entries) - 1 and ours in entries:
-        return False
-    hooks["PreToolUse"] = [*kept, ours]
-    _atomic_write(path, json.dumps(settings, ensure_ascii=False, indent=2) + "\n")
-    return True
+    changed = False
+    for event, ours in _our_entries(cfg).items():
+        entries = hooks.get(event) or []
+        kept = [e for e in entries if not _is_ours(e)]
+        if len(kept) == len(entries) - 1 and ours in entries:
+            continue
+        hooks[event] = [*kept, ours]
+        changed = True
+    if changed:
+        _atomic_write(path, json.dumps(settings, ensure_ascii=False, indent=2) + "\n")
+    return changed
 
 
 def uninstall_hook(cfg: Config) -> bool:
@@ -209,15 +267,23 @@ def uninstall_hook(cfg: Config) -> bool:
         settings = _load_settings(path)
     except ValueError:
         return False
-    entries = (settings.get("hooks") or {}).get("PreToolUse")
-    if not isinstance(entries, list) or not any(_is_ours(e) for e in entries):
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
         return False
-    kept = [e for e in entries if not _is_ours(e)]
-    if kept:
-        settings["hooks"]["PreToolUse"] = kept
-    else:
-        del settings["hooks"]["PreToolUse"]
-        if not settings["hooks"]:
-            del settings["hooks"]
+    changed = False
+    for event in _our_entries(cfg):
+        entries = hooks.get(event)
+        if not isinstance(entries, list) or not any(_is_ours(e) for e in entries):
+            continue
+        kept = [e for e in entries if not _is_ours(e)]
+        if kept:
+            hooks[event] = kept
+        else:
+            del hooks[event]
+        changed = True
+    if not changed:
+        return False
+    if not hooks:
+        del settings["hooks"]
     _atomic_write(path, json.dumps(settings, ensure_ascii=False, indent=2) + "\n")
     return True

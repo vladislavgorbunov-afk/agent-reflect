@@ -12,6 +12,9 @@ REPLACE_MAX = 300  # chars of existing text an edit may replace; an insertion ma
 DIFF_MAX_LINES = 60
 INCIDENT_LOG = "incident_log"
 SKILL_LARGE_CHARS = 24_000  # past this a skill gets an advisory, never a refusal
+# lines an edit may add to a file every session loads whole (a project's CLAUDE.md): a rule that
+# goes in takes the place of one it covers, so the file the agent always reads does not grow (Harness²)
+ALWAYS_ON_NET_LINES = 1
 # Standards whose names look like ticket keys.
 _NOT_TICKETS = frozenset({"UTF", "SHA", "ISO", "RFC", "HTTP", "TLS", "SSL", "AES", "RSA", "MD", "CVE", "IPV"})
 # What an incident log leaves in a skill: a date, a PR or issue number, a ticket key, a session id.
@@ -33,6 +36,17 @@ def size_error(old: str, new: str) -> str | None:
         return None
     return (f"the edit replaces {len(old)} chars of existing text; only an insertion "
             f"or a replacement of at most {REPLACE_MAX} chars is applied")
+
+
+def growth_error(old: str, new: str, limit: int = ALWAYS_ON_NET_LINES) -> str | None:
+    """Why an edit adds too many lines to a file every session loads, or None; blank lines do not count."""
+    def lines(text: str) -> int:
+        return sum(1 for line in text.splitlines() if line.strip())
+    added = lines(new) - lines(old)
+    if added <= limit:
+        return None
+    return (f"the edit adds {added} lines to a file every session loads; at most {limit}: "
+            f"a new rule takes the place of one it covers")
 
 
 def unified_diff(before: str, after: str, name: str) -> str:
