@@ -34,25 +34,28 @@ flowchart LR
     end
 
     subgraph M ["Memory"]
-        direction LR
+        direction TB
         m1("<b>MEMORY.md</b><br/>and lesson files"):::mem
         m2("<b>Hook patterns</b><br/>command, path, error"):::mem
+        m1 ~~~ m2
     end
 
     subgraph S ["Next sessions"]
-        direction LR
+        direction TB
         s1("<b>Load MEMORY.md</b><br/>at start"):::work
         s2("<b>Hook before a tool call</b><br/>shows the lesson at a<br/>matching command or file"):::work
         s3("<b>Hook after Bash</b><br/>shows the lesson after<br/>a matching error"):::work
+        s1 ~~~ s2 ~~~ s3
     end
 
     subgraph W ["Once a week · Opus"]
-        direction LR
+        direction TB
         w1("<b>Moves proven lessons</b><br/>into a skill or CLAUDE.md:<br/>in place, or a draft PR"):::week
         w2("<b>Judges the move</b><br/>30 days later:<br/>helped or not"):::week
         w3("<b>Tidies</b><br/>merges duplicates,<br/>drops stale lessons"):::week
         w4("<b>Learns from corrections</b><br/>3+ of one kind become<br/>a lesson about how to work"):::week
         w5("<b>Writes the digest</b><br/>digests/WEEK.md<br/>and a notification"):::out
+        w1 ~~~ w2 ~~~ w3 ~~~ w4 ~~~ w5
     end
 
     N -->|"lessons"| M
