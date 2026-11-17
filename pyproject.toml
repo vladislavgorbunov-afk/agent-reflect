@@ -1,0 +1,25 @@
+[project]
+name = "agent-reflect"
+version = "0.1.0"
+description = "Reflects on Claude Code session transcripts and writes lessons into memory"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+agent-reflect = "agent_reflect.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agent_reflect*"]
+
+[tool.setuptools.package-data]
+agent_reflect = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
