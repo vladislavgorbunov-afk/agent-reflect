@@ -20,19 +20,44 @@ agent-reflect does that bookkeeping. It reads what your sessions did, writes the
 ## How it works
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#94a3b8", "primaryColor": "#f1f5f9", "primaryBorderColor": "#cbd5e1", "primaryTextColor": "#0f172a", "clusterBkg": "#f8fafc", "clusterBorder": "#e2e8f0", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 28, "rankSpacing": 48, "padding": 14}}}%%
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#94a3b8", "primaryColor": "#f1f5f9", "primaryBorderColor": "#cbd5e1", "primaryTextColor": "#0f172a", "clusterBkg": "#f8fafc", "clusterBorder": "#e2e8f0", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 22, "rankSpacing": 36, "padding": 12}}}%%
 flowchart LR
-    S("<b>Your sessions</b><br/>load MEMORY.md at start;<br/>the hook shows a lesson<br/>at a command or an error"):::work
-    N("<b>Every night</b><br/>finds failures and corrections;<br/>Sonnet writes a lesson,<br/>Opus checks it"):::night
-    M("<b>Memory</b><br/>MEMORY.md, lesson files,<br/>hook patterns"):::mem
-    W("<b>Once a week</b><br/>Opus moves proven lessons<br/>into skills, tidies the rest"):::week
+    subgraph N ["Every night · 03:30"]
+        direction TB
+        n1("<b>Reads what is new</b><br/>in your Claude Code<br/>transcripts"):::night
+        n2("<b>Keeps the moments</b><br/>failures, hook blocks,<br/>corrections, recoveries"):::night
+        n3("<b>Sonnet decides</b><br/>new lesson, repeat,<br/>lesson broken, your rule<br/>broken, or nothing"):::night
+        n4("<b>Checks</b><br/>the quote is in the transcript,<br/>Opus agrees, it is concrete"):::night
+        n5("<b>Writes</b><br/>auto_ID.md, an index line<br/>once proven, a hook pattern"):::night
+        n6("<b>Reports the night</b><br/>reports/DATE.md<br/>and a notification"):::out
+        n1 --> n2 --> n3 --> n4 --> n5 --> n6
+    end
 
-    S -->|"transcripts"| N
+    subgraph M ["Memory"]
+        direction LR
+        m1("<b>MEMORY.md</b><br/>and lesson files"):::mem
+        m2("<b>Hook patterns</b><br/>command, path, error"):::mem
+    end
+
+    subgraph S ["Next sessions"]
+        direction LR
+        s1("<b>Load MEMORY.md</b><br/>at start"):::work
+        s2("<b>Hook before a tool call</b><br/>shows the lesson at a<br/>matching command or file"):::work
+        s3("<b>Hook after Bash</b><br/>shows the lesson after<br/>a matching error"):::work
+    end
+
+    subgraph W ["Once a week · Opus"]
+        direction LR
+        w1("<b>Moves proven lessons</b><br/>into a skill or CLAUDE.md:<br/>in place, or a draft PR"):::week
+        w2("<b>Judges the move</b><br/>30 days later: helped or not"):::week
+        w3("<b>Tidies</b><br/>merges duplicates,<br/>drops stale lessons"):::week
+        w4("<b>Learns from corrections</b><br/>3+ of one kind become<br/>a lesson about how to work"):::week
+        w5("<b>Writes the digest</b><br/>digests/WEEK.md<br/>and a notification"):::out
+    end
+
     N -->|"lessons"| M
-    M -->|"every session"| S
-    M <-->|"moves, merges"| W
-    N -.- R(["reports/"]):::out
-    W -.- D(["digests/"]):::out
+    M --> S
+    M <--> W
 
     classDef night fill:#eef2ff,stroke:#a5b4fc,color:#1e1b4b
     classDef mem fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
@@ -41,6 +66,10 @@ flowchart LR
     classDef user fill:#f1f5f9,stroke:#cbd5e1,color:#0f172a
     classDef muted fill:#ffffff,stroke:#cbd5e1,stroke-dasharray:4 3,color:#64748b
     classDef out fill:#ffffff,stroke:#cbd5e1,color:#475569
+    style N fill:#f8faff,stroke:#c7d2fe,color:#3730a3
+    style M fill:#f6fefa,stroke:#a7f3d0,color:#065f46
+    style S fill:#fffdf5,stroke:#fde68a,color:#92400e
+    style W fill:#faf8ff,stroke:#ddd6fe,color:#5b21b6
 ```
 
 ## What it does
@@ -109,11 +138,10 @@ Without calling a model, every run also counts hook failures and API errors that
 ### Where it lives
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#94a3b8", "primaryColor": "#f1f5f9", "primaryBorderColor": "#cbd5e1", "primaryTextColor": "#0f172a", "clusterBkg": "#f8fafc", "clusterBorder": "#e2e8f0", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 28, "rankSpacing": 48, "padding": 14}}}%%
-flowchart TB
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#94a3b8", "primaryColor": "#f1f5f9", "primaryBorderColor": "#cbd5e1", "primaryTextColor": "#0f172a", "clusterBkg": "#f8fafc", "clusterBorder": "#e2e8f0", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 28, "rankSpacing": 48, "padding": 14}}}%%
+flowchart LR
     subgraph P ["Project memory"]
-        direction LR
-        idx("<b>MEMORY.md</b><br/>loaded into every session"):::mem
+        idx("<b>MEMORY.md</b><br/>loaded into<br/>every session"):::mem
         yours("<b>Your notes</b><br/>never edited"):::user
         live("<b>auto_ID.md</b><br/>in the index"):::mem
         wait("<b>auto_ID.md</b><br/>no line: unseen"):::muted
@@ -122,13 +150,12 @@ flowchart TB
     end
 
     subgraph A ["agent-reflect's files"]
-        direction LR
-        st("<b>state.json</b><br/>every lesson and its counts"):::night
+        st("<b>state.json</b><br/>every lesson<br/>and its counts"):::night
         hook("<b>Hook files</b><br/>guard-rules.json<br/>guard-fires.jsonl"):::work
-        st <-->|"patterns out, showings back"| hook
+        st <-->|"patterns out,<br/>showings back"| hook
     end
 
-    st -.->|"tracks"| live & wait
+    live & wait -.->|"tracked in"| st
 
     classDef night fill:#eef2ff,stroke:#a5b4fc,color:#1e1b4b
     classDef mem fill:#ecfdf5,stroke:#6ee7b7,color:#064e3b
@@ -148,7 +175,7 @@ Project memory is `~/.claude/projects/<project>/memory`. `state/` (the ledger an
 ### The path of a lesson
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#94a3b8", "primaryColor": "#f1f5f9", "primaryBorderColor": "#cbd5e1", "primaryTextColor": "#0f172a", "clusterBkg": "#f8fafc", "clusterBorder": "#e2e8f0", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 28, "rankSpacing": 48, "padding": 14}}}%%
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#94a3b8", "primaryColor": "#f1f5f9", "primaryBorderColor": "#cbd5e1", "primaryTextColor": "#0f172a", "clusterBkg": "#f8fafc", "clusterBorder": "#e2e8f0", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 28, "rankSpacing": 48, "padding": 14}}}%%
 flowchart LR
     new(["A new lesson"]):::out --> wait
     wait("<b>Waiting</b><br/>file, no index line"):::work
