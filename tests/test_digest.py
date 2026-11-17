@@ -280,6 +280,14 @@ def test_digest_starts_with_week_chart():
     assert lines.index("Итого: 1 урок, 2 скилла, 1 PR") < start < lines.index("## 🆕 Новые уроки · 1")
 
 
+def test_memory_section_sits_between_the_chart_and_the_sections():
+    memory = ["## 🧠 Память", "", "```text", "y", "```"]
+    lines = digest.render(full_summary(), {}, "2026-W44", chart=WEEK_HEAD, memory=memory).splitlines()
+    start = lines.index(memory[0])
+    assert lines[start:start + len(memory)] == memory
+    assert lines.index(WEEK_HEAD[-1]) < start < lines.index("## 🆕 Новые уроки · 1")
+
+
 def test_digest_without_a_chart_has_none():
     assert "Неделя" not in digest.render(full_summary(), {}, "2026-W44")
 
@@ -303,7 +311,7 @@ def test_week_block_lays_out_chart_notes_live_lessons_and_memory(cfg):
     records = [_run("2026-10-21T10:00:00Z", {"no_entry": 2, "repeat": 1}),
                _run("2026-10-23T10:00:00Z", {"new_live": 1, "llm_error": 2, "no_project": 5})]
     block = _block(cfg, {"ab12cd34": lesson}, records, last=date(2026, 10, 24))
-    assert block[:-6] == [
+    assert block == [
         "## 📊 Неделя · 20–24 октября", "", "```text",
         "   вт 20  💤 прогона не было",
         "   ср 21  ⬜⬜🟦  3",
@@ -314,10 +322,9 @@ def test_week_block_lays_out_chart_notes_live_lessons_and_memory(cfg):
         "          🟥 пт 23: ошибок: 2. This is fine 🔥🐶",
         "",
         "🌱 живых уроков: 1 → 1 → 1 → 1 → 1 ➖",
-        "",
+        "```",
     ]
-    assert block[-6:-1] == chart.memory_gauges(cfg, {"ab12cd34": lesson}, detailed=True)
-    assert block[-1] == "```"
+    assert not any(line.startswith("🗃") for line in block)  # how full MEMORY.md is goes in the memory section
 
 
 def test_week_block_takes_live_lessons_from_the_runs_that_counted_them(cfg):
@@ -335,15 +342,6 @@ def test_week_block_leaves_out_days_before_installation_and_empty_lines(cfg):
                      "",
                      "🌱 живых уроков: 0 → 0 ➖",
                      "```"]
-
-
-def test_week_block_puts_a_blank_line_between_projects(cfg):
-    lessons = {"a": make_lesson(id="a", project_root="/x/alpha", memory_dir=str(cfg.state_dir / "a")),
-               "b": make_lesson(id="b", project_root="/x/beta", memory_dir=str(cfg.state_dir / "b"))}
-    block = _block(cfg, lessons)
-    alpha, beta = block.index("🗃 MEMORY.md · alpha"), block.index("🗃 MEMORY.md · beta")
-    assert block[alpha - 1] == "" and block[beta - 1] == "" and beta - alpha == 6
-    assert block[-2] != "" and block[-1] == "```"
 
 
 def test_section_headings_have_counts(cfg):

@@ -100,7 +100,7 @@ def _tool_calls(path: Path):
         return
 
 
-def _short_name(cfg: Config, folder: str) -> str:
+def location_name(cfg: Config, folder: str) -> str:
     """A project folder's name for the digest: the repo's name, else the slug past the repos' parent or home."""
     for name, root in cfg.repos.items():
         if sanitize(str(root)) == folder:
@@ -127,7 +127,7 @@ def _locations(cfg: Config) -> list[tuple[str, Path]]:
     except OSError:
         folders = []
     for folder in folders:
-        found.append((_short_name(cfg, folder.name), folder / "memory"))
+        found.append((location_name(cfg, folder.name), folder / "memory"))
     return [(NOTES, _notes_dir(cfg))] + sorted(found)
 
 

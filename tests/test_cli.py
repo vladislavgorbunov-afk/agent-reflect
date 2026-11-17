@@ -293,6 +293,50 @@ def test_digest_is_written_without_a_chart_that_fails_to_draw(cfg, monkeypatch):
     assert "week chart not drawn" in log and "NoneType" in log and "abcdef123456" not in log
 
 
+def _with_a_live_lesson(cfg) -> None:
+    folder = cfg.projects_dir / "-p" / "memory"
+    folder.mkdir(parents=True)
+    (folder / "MEMORY.md").write_text("- [auto_ab12cd34.md](auto_ab12cd34.md) — h\n", encoding="utf-8")
+    (folder / "auto_ab12cd34.md").write_text("x", encoding="utf-8")
+    lesson = Lesson(id="ab12cd34", project_root="/p", memory_dir=str(folder), file="auto_ab12cd34.md", title="t",
+                    hook="h", cue="c", lesson="l", why="w", confidence="high", repeats=1, evidence=[], status="live",
+                    sha256="", created_at="", updated_at="")
+    _installed(cfg, lessons={"ab12cd34": lesson})
+
+
+def test_digest_has_the_memory_map(cfg, monkeypatch):
+    _with_a_live_lesson(cfg)
+    monkeypatch.setattr(cli.digest, "notify", lambda *a, **k: None)
+    _consolidate_calls(monkeypatch, {"new_lessons": [], "promoted": [], "prs": [], "removed": [],
+                                     "suggestions": [], "errors": [],
+                                     "memory_reads": {"days": 30, "locations": []}})
+    assert cli.main(["consolidate", "--force"]) == 0
+    (path,) = cfg.digests_dir.glob("*.md")
+    text = path.read_text(encoding="utf-8")
+    assert "## 🧠 Память" in text and "│ 0 твоих строк" in text and "1 строка урока из 40" in text
+    assert "0 не открывали за 30 дней" in text  # the week's scan of reads reaches the map
+    assert text.index("## 📊 Неделя") < text.index("## 🧠 Память") < text.index("## 🆕 Новые уроки")
+
+
+def test_digest_is_written_without_a_memory_map_that_fails_to_draw(cfg, monkeypatch):
+    _with_a_live_lesson(cfg)
+    monkeypatch.setattr(cli.digest, "notify", lambda *a, **k: None)
+
+    def bug(*a, **k):
+        raise KeyError("token=abcdef123456")
+
+    monkeypatch.setattr(cli.memory_map, "block", bug)
+    _consolidate_calls(monkeypatch, {"new_lessons": [], "promoted": [{"target": "a"}], "prs": [], "removed": [],
+                                     "suggestions": [], "errors": []})
+    assert cli.main(["consolidate", "--force"]) == 0
+    (path,) = cfg.digests_dir.glob("*.md")
+    text = path.read_text(encoding="utf-8")
+    assert "## 🛠 Перенесено в скиллы · 1" in text and "## 📊 Неделя" in text
+    assert "## 🧠" not in text
+    log = (cfg.logs_dir / "consolidate.log").read_text()
+    assert "memory map not drawn" in log and "abcdef123456" not in log
+
+
 def test_a_second_consolidate_in_the_week_keeps_the_first_digest(cfg, monkeypatch):
     _installed(cfg)
     monkeypatch.setattr(cli, "_now", lambda: RUN_AT)
