@@ -164,6 +164,8 @@ Tests never call the real `claude`, `gh`, `launchctl` or `terminal-notifier`.
 
 Changes land through a pull request into `master`. The `tests` check (`.github/workflows/pr-checks.yml`) must pass on a branch that carries the latest `master`: the repository ruleset on `master` requires it and allows no direct or force push.
 
+If GitHub Actions is down, the check never starts and nothing can be merged. For an urgent merge, turn the ruleset off (Settings → Rules → Rulesets → `master` → Enforcement status: Disabled, or `gh api -X PUT repos/vladislavgorbunov-afk/agent-reflect/rulesets/27454875 -f enforcement=disabled`, which leaves its rules as they are), merge, and turn it back on right away (`-f enforcement=active`).
+
 ## License
 
 MIT
