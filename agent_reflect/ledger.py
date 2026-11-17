@@ -13,6 +13,8 @@ from typing import Iterator
 
 # "retired": the user took its line out of the index with `retire`; its file stays, and a repeat brings it back
 LESSON_STATUSES = ("live", "staged", "promoted", "rejected", "user_owned", "removed", "retired")
+# a lesson's patterns for the guard hook: what each is matched against, and the field that holds it
+PATTERN_FIELDS = (("command", "trigger"), ("path", "path_trigger"), ("error", "error_trigger"))
 
 
 @dataclass
@@ -44,7 +46,8 @@ class Lesson:
     # times an agent opened the lesson's file (or named it to Grep/Bash), and the last time one did
     reads: int = 0
     last_read_at: str | None = None
-    # "tool": how to run something; "process": how to work, read from the user returning the work
+    # "tool": how to run something; "process": how to work, read from the user returning the work;
+    # "fact": a fact about the project the session paid to find out, which can go stale
     kind: str = "tool"
     # what the user's correction was about (reflect.FORMS), "" for a lesson that came with none
     form: str = ""
@@ -57,6 +60,41 @@ class Lesson:
     # a regex over the path of a file: the guard hook shows the lesson when the agent is about
     # to edit such a file, once a session
     path_trigger: str = ""
+    # a regex over what a failed shell command printed, for a mistake its command does not show:
+    # the guard hook shows the lesson right after such a failure, once a session, and a failure
+    # that matches is a repeat without asking the model
+    error_trigger: str = ""
+    # the user made the hook refuse a command its trigger matches (`guard block`): for a lesson
+    # broken although the hook showed it. Only the user sets it; nothing else ever does
+    block: bool = False
+    # a fact's way to check it again (a command to run, a file to read): facts go stale
+    recheck: str = ""
+    # when the user last said the fact still holds (`agent-reflect confirm`)
+    rechecked_at: str | None = None
+    # when the hook showed the lesson as a command was run, per session (the last guard.FIRED_SESSIONS_MAX
+    # sessions, guard.FIRE_TIMES_MAX times each): the hook's text reaches the agent with that command's
+    # result, so a failing command after an earlier showing is one the agent ran having read the lesson
+    fire_times: dict[str, list[str]] = field(default_factory=dict)
+
+    # the weekly run moved the lesson into a skill or CLAUDE.md (`promoted_to`, a target key) at
+    # `promoted_at`, through the pull request `promoted_pr` when it went by one
+    promoted_at: str | None = None
+    promoted_to: str = ""
+    promoted_pr: str = ""
+    # since when the moved rule is there for sessions to load: the move for a personal skill, the
+    # merge for a pull request; None while the PR is open. Comebacks are kept from the move (the
+    # lesson left memory then), the verdict counts those from here on
+    moved_since: str | None = None
+    # sessions that made the lesson's mistake after the move:
+    # {"session", "ts", "text", "how": "trigger" | "model", "started"}
+    after: list[dict] = field(default_factory=list)
+    # the move's verdict once its window closed, or "rolled_back" (effect.VERDICTS), and when it was given
+    effect: str = ""
+    effect_at: str | None = None
+
+    def patterns(self) -> list[tuple[str, str]]:
+        """(what it is matched against, the pattern) for each pattern the lesson has, in PATTERN_FIELDS order."""
+        return [(on, getattr(self, name)) for on, name in PATTERN_FIELDS if getattr(self, name)]
 
 
 @dataclass
@@ -90,6 +128,9 @@ class State:
     reads_since: str | None = None
     # repo name -> the origin/main commit the weekly upstream scan has read up to
     upstream_synced: dict[str, str] = field(default_factory=dict)
+    # every move into a skill or CLAUDE.md, of lessons or of the user's notes alike:
+    # {"target", "at", "pr_url", "run_id", "rolled_back"?}; what changed a file, for the move verdicts
+    moves: list[dict] = field(default_factory=list)
 
     def event(self, kind: str, **fields) -> None:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

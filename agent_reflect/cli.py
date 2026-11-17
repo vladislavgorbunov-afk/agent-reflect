@@ -22,7 +22,7 @@ from . import (
 )
 from .config import RUN_ID_FORMAT, Config, ConfigError, is_run_id
 from .i18n import quoted, t
-from .ledger import State, load_state, parse_ts, run_lock, save_state, snapshot_baseline
+from .ledger import PATTERN_FIELDS, State, load_state, parse_ts, run_lock, save_state, snapshot_baseline
 from .llm import ensure_isolation_files
 from .memory import (
     MemoryIndexError, MemoryWriteError, go_live_if_room, remove_index_line, sync_ownership, write_lesson,
@@ -349,15 +349,20 @@ def _cmd_rollback(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def _lift_holds(cfg: Config, run_id: str, folders: set[Path]) -> None:
-    """The skill edits these backup folders held are undone: their lessons may be promoted again."""
+    """The skill edits these backup folders held are undone: their lessons may be promoted again,
+    and the moves they made are watched no more."""
     try:
         state = load_state(cfg.state_file)
     except Exception as exc:  # leave the unreadable file untouched
         print(f"agent-reflect: state unreadable, holds of {run_id} stay: {scrub(str(exc))[:300]}", file=sys.stderr)
         return
     lifted, kept = memory_archive.lift_holds(cfg, state, run_id, folders)
-    if lifted:
+    ended = memory_archive.end_rolled_back_moves(cfg, state, run_id, folders, _now().strftime("%Y-%m-%dT%H:%M:%SZ"))
+    if lifted or ended:
         save_state(state, cfg.state_file)
+    for lesson_id in ended:
+        print(t(f"  move of {lesson_id} undone: its effect is no longer checked",
+                f"  перенос {lesson_id} отменён: его эффект больше не проверяется"))
     for lesson_id in lifted:
         print(f"  hold lifted {lesson_id}: it may be promoted again")
     for lesson_id in kept:
@@ -512,7 +517,36 @@ def _guard_on(cfg: Config) -> int:
     return 0
 
 
+def _from_agent() -> bool:
+    """True in a Claude Code shell: the agent runs the command, not the user."""
+    return os.environ.get("CLAUDECODE") == "1"
+
+
+def _users_only(what: str) -> int:
+    """Refuse the agent what only the user decides: setting or lifting a block, or taking a blocking lesson away."""
+    print(t(f"agent-reflect: {what}: run from Claude Code (CLAUDECODE=1); only the user does this, in their own "
+            f"terminal; tell them the command and why",
+            f"agent-reflect: {what}: запущено из Claude Code (CLAUDECODE=1); это делает только пользователь, "
+            f"в своём терминале; скажи ему команду и зачем"),
+          file=sys.stderr)
+    return 2
+
+
+def _blocks(lesson) -> bool:
+    """The lesson's block holds: the hook's rules carry only trusted lessons."""
+    return lesson.block and lesson.status in guard.ACTIVE
+
+
+def _something_blocks(cfg: Config) -> bool:
+    try:
+        return any(_blocks(lesson) for lesson in load_state(cfg.state_file).lessons.values())
+    except Exception:  # unreadable: a block may stand in it, so the agent is refused as if one did
+        return True
+
+
 def _cmd_uninstall(cfg: Config, args: argparse.Namespace) -> int:
+    if _from_agent() and _something_blocks(cfg):
+        return _users_only("uninstall")
     launchd.uninstall(cfg)
     try:
         guard.uninstall_hook(cfg)
@@ -526,16 +560,21 @@ def _guard_list(cfg: Config) -> int:
     state = load_state(cfg.state_file)
     for lesson in sorted(state.lessons.values(), key=lambda item: item.id):
         shown = t("shown", "показывается") if lesson.status in guard.ACTIVE else t("waits", "ждёт") + f" ({lesson.status})"
-        for mark, pattern in ((t("command", "команда"), lesson.trigger), (t("file", "файл"), lesson.path_trigger)):
-            if pattern:
-                print(f"{lesson.id}  {shown}, " + t("fired: ", "сработал: ")
-                      + f"{lesson.fires}  {mark} /{pattern}/  {lesson.title}")
+        if lesson.block:
+            shown += t(", blocks", ", блокирует")
+        for on, pattern in lesson.patterns():
+            print(f"{lesson.id}  {shown}, " + t("fired: ", "сработал: ")
+                  + f"{lesson.fires}  {_on_mark(on)} /{pattern}/  {lesson.title}")
     for rule in state.user_guards:
-        mark = t("command", "команда") if rule.get("on") == "command" else t("file", "файл")
+        mark = _on_mark(str(rule.get("on")))
         where = rule.get("project") or _every_project()
         print(f"{guard.USER_PREFIX}{rule.get('name')}  " + t("your rule, fired: ", "твоё правило, сработало: ")
               + f"{rule.get('fires') or 0}  {mark} /{rule.get('pattern')}/  {where}  {rule.get('text')}")
     return 0
+
+
+def _on_mark(on: str) -> str:
+    return {"command": t("command", "команда"), "path": t("file", "файл")}.get(on) or t("error", "ошибка")
 
 
 def _every_project() -> str:
@@ -586,10 +625,16 @@ def _guard_user_rule(cfg: Config, args: argparse.Namespace, on: str) -> int:
 
 def _cmd_guard(cfg: Config, args: argparse.Namespace) -> int:
     """What the guard hook shows: list it, set or drop a lesson's trigger by hand, add a rule, try a text."""
-    on = "path" if args.path else "command"
+    if args.path and args.error:
+        print(t("agent-reflect: --path and --error do not go together",
+                "agent-reflect: --path и --error вместе не ставятся"), file=sys.stderr)
+        return 2
+    on = "path" if args.path else "error" if args.error else "command"
     if args.action == "on":
         return _guard_on(cfg)
     if args.action == "off":
+        if _from_agent() and _something_blocks(cfg):
+            return _users_only("guard off")
         print("guard hook removed" if guard.uninstall_hook(cfg) else "guard hook was not installed")
         return 0
     if args.action == "list":
@@ -604,6 +649,8 @@ def _cmd_guard(cfg: Config, args: argparse.Namespace) -> int:
         return 0
     if args.action in ("add", "remove"):
         return _guard_user_rule(cfg, args, on)
+    if args.action in ("block", "unblock"):
+        return _guard_block(cfg, args)
     if not args.args:
         print("agent-reflect: guard set|unset needs a lesson id", file=sys.stderr)
         return 2
@@ -611,17 +658,56 @@ def _cmd_guard(cfg: Config, args: argparse.Namespace) -> int:
     if args.action == "set" and (why := guard.check_trigger(trigger, on)):
         print(f"agent-reflect: trigger not set: {why}", file=sys.stderr)
         return 2
-    field = "path_trigger" if args.path else "trigger"
+    field = dict(PATTERN_FIELDS)[on]
 
     def work(state: State) -> int:
         lesson = state.lessons.get(lesson_id)
         if lesson is None:
             print(f"agent-reflect: no lesson {lesson_id}", file=sys.stderr)
             return 2
+        if _blocks(lesson) and _from_agent():
+            return _users_only(f"guard {args.action} {lesson_id}")
         setattr(lesson, field, trigger if args.action == "set" else "")
+        if field == "trigger" and not lesson.trigger:
+            lesson.block = False  # nothing left to block on
         guard.sync(cfg, state)
         now = getattr(lesson, field)
         print(f"{lesson_id}: /{now}/" if now else f"{lesson_id}: " + t("no pattern", "без шаблона"))
+        return 0
+    return _guarded(cfg, "guard", work)
+
+
+def _guard_block(cfg: Config, args: argparse.Namespace) -> int:
+    """`guard block <id>`: the hook refuses a command the lesson's trigger matches; `unblock` lifts it.
+
+    Only the user turns it on: the weekly digest proposes it for a lesson broken although the hook showed it.
+    """
+    if len(args.args) != 1:
+        print(t(f"agent-reflect: guard {args.action} needs one lesson id",
+                f"agent-reflect: guard {args.action} нужен один id урока"), file=sys.stderr)
+        return 2
+    lesson_id = args.args[0]
+    if _from_agent():
+        return _users_only(f"guard {args.action}")
+
+    def work(state: State) -> int:
+        lesson = state.lessons.get(lesson_id)
+        if lesson is None:
+            print(f"agent-reflect: {lesson_id}: {_no_lesson()}", file=sys.stderr)
+            return 2
+        if args.action == "block" and not lesson.trigger:
+            print(t(f"agent-reflect: {lesson_id} has no command pattern to block on "
+                    f"(`agent-reflect guard set {lesson_id} <regex>`)",
+                    f"agent-reflect: у {lesson_id} нет шаблона команды, блокировать не по чему "
+                    f"(`agent-reflect guard set {lesson_id} <regex>`)"), file=sys.stderr)
+            return 2
+        if args.action == "block" and lesson.status not in guard.ACTIVE:
+            print(t(f"agent-reflect: {lesson_id} is not shown by the hook (now: {lesson.status})",
+                    f"agent-reflect: {lesson_id} хук не показывает (сейчас: {lesson.status})"), file=sys.stderr)
+            return 2
+        lesson.block = args.action == "block"
+        guard.sync(cfg, state)
+        print(f"{lesson_id}: " + (t("blocks", "блокирует") if lesson.block else t("does not block", "не блокирует")))
         return 0
     return _guarded(cfg, "guard", work)
 
@@ -729,6 +815,8 @@ def _cmd_retire(cfg: Config, args: argparse.Namespace) -> int:
                                                           f"урок не в индексе (сейчас: {lesson.status})"))
             print(f"agent-reflect: {args.lesson_id}: {why}", file=sys.stderr)
             return 2
+        if _blocks(lesson) and _from_agent():
+            return _users_only(f"retire {lesson.id}")
         try:
             remove_index_line(Path(lesson.memory_dir), lesson.file)
         except _MEMORY_ERRORS as exc:
@@ -742,6 +830,20 @@ def _cmd_retire(cfg: Config, args: argparse.Namespace) -> int:
             f"строка убрана из MEMORY.md, файл {lesson.file} остался; вернуть: agent-reflect approve {lesson.id}"))
         return 0
     return _guarded(cfg, "retire", work)
+
+
+def _cmd_confirm(cfg: Config, args: argparse.Namespace) -> int:
+    """The user checked a fact again and it holds: it leaves the digest's recheck list for another month."""
+    def work(state: State) -> int:
+        lesson = state.lessons.get(args.lesson_id)
+        if lesson is None or lesson.kind != "fact":
+            why = _no_lesson() if lesson is None else t("the lesson is not a fact", "урок — не факт")
+            print(f"agent-reflect: {args.lesson_id}: {why}", file=sys.stderr)
+            return 2
+        lesson.rechecked_at = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        print(f"{lesson.id}: {quoted(lesson.title)} — " + t("confirmed", "подтверждён"))
+        return 0
+    return _guarded(cfg, "confirm", work)
 
 
 def _cmd_staged(cfg: Config, args: argparse.Namespace) -> int:
@@ -796,11 +898,13 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--hours", type=_positive, help="the last N hours instead of the night")
     p.add_argument("-v", "--verbose", action="store_true", help="every decision, with the model's notes")
     p.set_defaults(fn=_cmd_recent)
-    p = sub.add_parser("guard", help="what the hook shows when a command or an edited file matches a trigger")
-    p.add_argument("action", choices=("list", "set", "unset", "test", "on", "off", "add", "remove"))
+    p = sub.add_parser("guard", help="what the hook shows when a command, an edited file or an error matches a trigger")
+    p.add_argument("action", choices=("list", "set", "unset", "test", "on", "off", "add", "remove", "block", "unblock"))
     p.add_argument("args", nargs="*", help="set: <lesson id> <regex>; unset: <lesson id>; test: <command or path>; "
-                                           "add: <name> <regex> --text …; remove: <name>")
+                                           "add: <name> <regex> --text …; remove: <name>; "
+                                           "block, unblock: <lesson id>")
     p.add_argument("--path", action="store_true", help="the regex is over the path of an edited file")
+    p.add_argument("--error", action="store_true", help="the regex is over what a failed shell command printed")
     p.add_argument("--text", help="add: what the agent is shown")
     p.add_argument("--project", help="add: the project root the rule is for (every project when left out)")
     p.set_defaults(fn=_cmd_guard)
@@ -813,6 +917,9 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("approve", help="put a waiting lesson into the index now")
     p.add_argument("lesson_id")
     p.set_defaults(fn=_cmd_approve)
+    p = sub.add_parser("confirm", help="a fact was checked again and still holds")
+    p.add_argument("lesson_id")
+    p.set_defaults(fn=_cmd_confirm)
     p = sub.add_parser("retire", help="take a lesson's line out of the index, keeping its file")
     p.add_argument("lesson_id")
     p.set_defaults(fn=_cmd_retire)

@@ -11,8 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_reflect import skills
-from agent_reflect.config import Config, is_run_id
-from agent_reflect.ledger import Lesson, State
+from agent_reflect.config import RUN_ID_FORMAT, Config, is_run_id
+from agent_reflect.ledger import Lesson, State, parse_ts
 from agent_reflect.memory import (
     _AUTO_FILE_RE,
     AUTO_PREFIX,
@@ -404,6 +404,36 @@ def apply_rollback(cfg: Config, state: State, plan: RollbackPlan, now_iso: str |
             record.live_since = now_iso
         state.lessons[restore.record.id] = record
     return problems
+
+
+def end_rolled_back_moves(cfg: Config, state: State, run_id: str, restored: set[Path], now_iso: str) -> list[str]:
+    """After `rollback run_id` restored the skill backup folders in `restored`, stop watching the
+    lessons moved into one of them by that run or a later one: the file is back as it was before
+    the run, so their rule is gone from it and no verdict on their move could mean anything.
+    The recorded moves into those files are marked rolled back too. Returns the lessons' ids.
+    """
+    targets = {move.get("target") for move in state.moves
+               if isinstance(move, dict) and move.get("run_id") == run_id and not move.get("pr_url")}
+    targets |= {change.get("target") for change in (run_changes(cfg, run_id) or {}).values()
+                if change.get("kind") == "retire" and not change.get("pr_url")}
+    targets = {t for t in targets if isinstance(t, str) and skills.backup_folder(cfg, run_id, t) in restored}
+    try:
+        since = datetime.strptime(run_id, RUN_ID_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return []
+    ended = []
+    for lesson in state.lessons.values():
+        at = parse_ts(lesson.promoted_at)
+        # a restored target is a personal skill: a move into it never went by PR
+        if (lesson.status == "promoted" and not lesson.effect and lesson.promoted_to in targets
+                and at is not None and at >= since):
+            lesson.effect, lesson.effect_at = "rolled_back", now_iso
+            ended.append(lesson.id)
+    for move in state.moves:
+        at = parse_ts(move.get("at")) if isinstance(move, dict) else None
+        if at is not None and at >= since and move.get("target") in targets:
+            move["rolled_back"] = True
+    return ended
 
 
 def lift_holds(cfg: Config, state: State, run_id: str, restored: set[Path]) -> tuple[list[str], list[str]]:

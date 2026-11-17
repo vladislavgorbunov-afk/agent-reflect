@@ -5,7 +5,7 @@ import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -61,7 +61,8 @@ MAX_LLM_ERRORS = 3
 # did something other than what was asked; operational: a tool or a command used wrongly.
 FORMS = ("self_report", "constraint", "intent", "operational", "other")
 # A lesson about a tool or a command, or one about how to work (read from the user's corrections).
-KINDS = ("tool", "process")
+KINDS = ("tool", "process", "fact")
+RECHECK_MAX = 300
 MAX_ENTRIES = 3  # lessons and repeats one model answer may carry
 MAX_EPISODES = 40  # of one answer: a count, so a long part with many corrections must not be cut short
 # Which reading of the user's corrections counted them. Raise it when the prompt or the dialogue
@@ -97,6 +98,8 @@ ENTRY_SCHEMA: dict = {
         "form": {"type": "string", "enum": list(FORMS)},
         "trigger": {"type": "string"},
         "path_trigger": {"type": "string"},
+        "error_trigger": {"type": "string"},
+        "recheck": {"type": "string"},
         "refs": {"type": "array", "items": _REF_SCHEMA},
     },
     "required": ["verdict"],
@@ -225,8 +228,9 @@ def build_verify_prompt(fields: dict, cited: list[str], segment_text: str = "") 
     """The second look gets what the first one read: the lesson, the passages it quotes and the same part."""
     return load_template("verify.md").substitute(
         nonce=nonce(),
-        lesson=_VERIFY_TAGS.defuse("\n".join(f"{name}: {squash(fields.get(name, ''))}"
-                                             for name in ("cue", "lesson", "why"))),
+        lesson=_VERIFY_TAGS.defuse("\n".join(
+            [f"{name}: {squash(fields.get(name, ''))}" for name in ("cue", "lesson", "why")]
+            + ([f"kind: fact", f"recheck: {squash(fields.get('recheck', ''))}"] if fields.get("kind") == "fact" else []))),
         passages=_VERIFY_TAGS.defuse("\n".join(cited).strip()) or "—",
         segment=_VERIFY_TAGS.defuse(segment_text.strip()) or "—",
     )
@@ -387,6 +391,26 @@ def valid_trigger(segment: Segment, trigger: str) -> tuple[str, str]:
     return trigger, ""
 
 
+def valid_error_trigger(segment: Segment, trigger: str) -> tuple[str, str]:
+    """The error trigger if it can be trusted, else "" and why not.
+
+    An error trigger is a regex over what a failed shell command printed, for a mistake its
+    command does not show. It must match the output of a failure in this segment, no output
+    every failure prints, and not what the command that fixed it printed: only then does it
+    tell this failure from a run that worked.
+    """
+    if not trigger:
+        return "", ""
+    if why_not := guard.check_trigger(trigger, "error"):
+        return "", why_not
+    pattern = re.compile(trigger)
+    if not any(pattern.search(s.text) for s in segment.signals if s.kind in _FAILING and s.command and s.text):
+        return "", "matches no failing output of the segment"
+    if any(pattern.search(s.text) for s in segment.signals if s.kind == "recovery" and s.text):
+        return "", "matches the output that worked"
+    return trigger, ""
+
+
 def valid_path_trigger(segment: Segment, trigger: str) -> tuple[str, str]:
     """The path trigger if it can be trusted, else "" and why not.
 
@@ -404,9 +428,27 @@ def valid_path_trigger(segment: Segment, trigger: str) -> tuple[str, str]:
 
 
 def _auto_line(lesson: Lesson) -> str:
-    """One auto-lesson for the prompt; a live one says since when its line is in the index."""
-    since = f" [в индексе с {_live_since(lesson)}]" if lesson.status == "live" else ""
+    """One auto-lesson for the prompt; a live one says since when its line is in the index, a moved
+    one since when it is in a skill."""
+    if lesson.status == "promoted":
+        since = f" [перенесён в скилл {lesson.promoted_at}]"
+    else:
+        since = f" [в индексе с {_live_since(lesson)}]" if lesson.status == "live" else ""
     return f"{lesson.id}{since}: {lesson.cue} → {lesson.lesson}"
+
+
+def prompt_lessons(state: State, project_root: Path) -> list[Lesson]:
+    """The auto-lessons of a project the model may name: in memory or waiting, and those moved into a
+    skill since moves were recorded, whose mistake coming back tells whether the move helped."""
+    return [lesson for lesson in state.lessons.values()
+            if lesson.project_root == str(project_root)
+            and (lesson.status in ("live", "staged", "retired") or _watched(lesson))]
+
+
+def _watched(lesson: Lesson) -> bool:
+    """A lesson moved out of memory into a skill, with no verdict yet: its mistake is counted from the move,
+    while its PR waits too; the verdict counts only what came after the rule was there (effect.check)."""
+    return lesson.status == "promoted" and bool(lesson.promoted_at) and not lesson.effect
 
 
 def _live_since(lesson: Lesson) -> str:
@@ -419,7 +461,7 @@ def apply_verdict(state: State, cfg: Config, segment: Segment, project_root: Pat
                   verify: Verify | None = None) -> str:
     """Turn one reflector verdict (one entry of an answer) into memory writes.
 
-    Returns "no_entry", "new_live", "new_staged", "repeat", "violated", "user_rule_repeat",
+    Returns "no_entry", "new_live", "new_staged", "repeat", "violated", "after_promotion", "user_rule_repeat",
     "rejected_cue", "rejected_not_concrete", "rejected_bad_quote", "rejected_unsupported",
     "bad_verdict" or "write_failed". A bad verdict or a refused lesson writes nothing.
     `verify` is the second look at a new lesson that came with quotes: True when the quoted
@@ -436,6 +478,10 @@ def apply_verdict(state: State, cfg: Config, segment: Segment, project_root: Pat
         return "no_entry"
     if kind == "NEW":
         return _apply_new(state, cfg, segment, project_root, memory_dir, verdict, now_iso, verify)
+    if kind in ("REPEAT", "LESSON_VIOLATED"):
+        moved = state.lessons.get(_text(verdict, "lesson_id"))
+        if moved is not None and _watched(moved):
+            return _after_promotion(state, segment, project_root, moved, _text(verdict, "evidence"), "model", kind)
     if kind == "REPEAT":
         return _repeat(state, cfg, segment, project_root,
                        _text(verdict, "lesson_id"), _text(verdict, "evidence"), now_iso)
@@ -461,7 +507,8 @@ def _apply_new(state: State, cfg: Config, segment: Segment, project_root: Path,
     if segment.agent_id and fields["confidence"] == "high":
         # a subagent has no user: nothing in its segment confirms the better path, so it waits
         fields["confidence"] = "medium"
-    refs = check_refs(segment, verdict.get("refs")) if "refs" in verdict or kind == "process" else None
+    # how to work and what holds in a project are both read from the record: neither stands without quotes
+    refs = check_refs(segment, verdict.get("refs")) if "refs" in verdict or kind in ("process", "fact") else None
     if refs is not None and refs.reason:
         # the evidence is not in the segment as quoted: nothing else about the lesson can be trusted
         state.event("lesson_bad_quote", project=project, session=segment.session_id,
@@ -478,7 +525,13 @@ def _apply_new(state: State, cfg: Config, segment: Segment, project_root: Path,
         if fields["confidence"] == "high" and len(refs.user_turns) < 2:
             # one correction is one opinion; the same correction twice is a pattern
             fields["confidence"] = "medium"
-    elif not is_concrete(fields["lesson"]):
+    elif kind == "fact" and not _text(verdict, "recheck"):
+        # a fact nobody can check again goes stale unseen
+        state.event("lesson_not_concrete", project=project, session=segment.session_id,
+                    reason="a fact says no way to check it again",
+                    lesson=scrub(squash(fields["lesson"]))[:NOT_CONCRETE_MAX])
+        return "rejected_not_concrete"
+    if kind != "process" and not is_concrete(fields["lesson"]):
         # a well-formed verdict the quality bar turned down: an outcome, not an error
         state.event("lesson_not_concrete", project=project, session=segment.session_id,
                     lesson=scrub(squash(fields["lesson"]))[:NOT_CONCRETE_MAX])
@@ -486,8 +539,9 @@ def _apply_new(state: State, cfg: Config, segment: Segment, project_root: Path,
     if normalize_cue(fields["cue"]) in state.rejected_cues.get(project, []):
         state.event("rejected_cue", project=project, session=segment.session_id, cue=fields["cue"])
         return "rejected_cue"
+    recheck = squash(_text(verdict, "recheck"))[:RECHECK_MAX] if kind == "fact" else ""
     if verify is not None and refs is not None:
-        supported, reason = verify(fields, list(refs.cited))
+        supported, reason = verify({**fields, "kind": kind, "recheck": recheck}, list(refs.cited))
         if supported is False:
             state.event("lesson_unsupported", project=project, session=segment.session_id,
                         reason=scrub(squash(reason))[:NOTES_LOG_MAX], cue=scrub(squash(fields["cue"])),
@@ -495,11 +549,14 @@ def _apply_new(state: State, cfg: Config, segment: Segment, project_root: Path,
             return "rejected_unsupported"
         if supported is None and fields["confidence"] == "high":
             fields["confidence"] = "medium"  # nobody looked twice: it waits for a repeat
-    trigger = ""
+    trigger = error_trigger = ""
     if kind == "tool":
         trigger, why_not = valid_trigger(segment, _text(verdict, "trigger"))
         if why_not:
             state.event("trigger_dropped", project=project, session=segment.session_id, reason=why_not)
+        error_trigger, why_not = valid_error_trigger(segment, _text(verdict, "error_trigger"))
+        if why_not:
+            state.event("trigger_dropped", project=project, session=segment.session_id, on="error", reason=why_not)
     path_trigger, why_not = valid_path_trigger(segment, _text(verdict, "path_trigger"))
     if why_not:
         state.event("trigger_dropped", project=project, session=segment.session_id, on="path", reason=why_not)
@@ -531,6 +588,8 @@ def _apply_new(state: State, cfg: Config, segment: Segment, project_root: Path,
         form=verdict.get("form") if verdict.get("form") in FORMS else "",
         trigger=trigger,
         path_trigger=path_trigger,
+        error_trigger=error_trigger,
+        recheck=recheck,
     )
     try:
         lesson.sha256 = write_lesson(memory_dir, lesson)
@@ -572,6 +631,35 @@ def _checked_lesson(state: State, segment: Segment, project_root: Path, kind: st
     return lesson
 
 
+def _after_promotion(state: State, segment: Segment, project_root: Path, lesson: Lesson, evidence: str,
+                     how: str, kind: str) -> str:
+    """The mistake of a lesson moved into a skill, made again: kept for the move's verdict, memory untouched.
+
+    It counts once a session, and only for a session that started after the move: an earlier one
+    had the lesson in its memory, not in the skill.
+    """
+    if lesson.project_root != str(project_root):
+        return _bad(state, segment, project_root, kind, f"no lesson {lesson.id!r} in this project")
+    if not evidence:
+        return _bad(state, segment, project_root, kind, "missing evidence")
+    started, moved = parse_ts(segment.session_start or segment.first_ts), parse_ts(lesson.promoted_at)
+    if started is None or moved is None or started < moved:
+        # it had the lesson in memory, not in the skill: it says nothing about the move, and is no error
+        if not any(e.get("kind") == "after_promotion_skipped" and e.get("session") == segment.session_id
+                   and e.get("lesson_id") == lesson.id for e in state.events):
+            state.event("after_promotion_skipped", project=lesson.project_root, session=segment.session_id,
+                        lesson_id=lesson.id, reason="the session started before the move")
+        return "no_entry"
+    counted = segment.session_id not in {a.get("session") for a in lesson.after}
+    if counted:
+        # when it started: a session begun before a PR's merge never had the skill (effect counts from the merge)
+        lesson.after.append({**_evidence(segment, evidence), "how": how,
+                             "started": segment.session_start or segment.first_ts})
+    state.event("lesson_after_promotion", project=lesson.project_root, session=segment.session_id,
+                lesson_id=lesson.id, target=lesson.promoted_to, how=how, counted=counted)
+    return "after_promotion"
+
+
 def _new_session(lesson: Lesson, segment: Segment) -> bool:
     """A repeat or a violation counts once per session: the same session saying it twice proves nothing new."""
     return segment.session_id not in {e.get("session") for e in lesson.evidence}
@@ -591,7 +679,7 @@ def _not_a_violation(lesson: Lesson, segment: Segment) -> str:
 
 
 def _violated(state: State, cfg: Config, segment: Segment, project_root: Path,
-              lesson_id: str, evidence: str, now_iso: str) -> str:
+              lesson_id: str, evidence: str, now_iso: str, after_showing: bool = False) -> str:
     """The agent did what a live lesson forbids, in a session that had the lesson in its index."""
     lesson = state.lessons.get(lesson_id)
     if lesson is not None and lesson.status == "live":
@@ -606,7 +694,9 @@ def _violated(state: State, cfg: Config, segment: Segment, project_root: Path,
     lesson = checked
     new_session = _new_session(lesson, segment)
     updated = replace(lesson, violations=lesson.violations + int(new_session), last_violated_at=now_iso,
-                      evidence=[*lesson.evidence, _evidence(segment, evidence)], updated_at=now_iso)
+                      evidence=[*lesson.evidence, {**_evidence(segment, evidence), "violated": True,
+                                                   **({"after_showing": True} if after_showing else {})}],
+                      updated_at=now_iso)
     try:
         updated.sha256 = write_lesson(Path(lesson.memory_dir), updated)
     except _WRITE_ERRORS as exc:
@@ -779,30 +869,113 @@ def worth_asking(segment: Segment) -> bool:
 def trigger_hits(state: State, cfg: Config, segment: Segment, project_root: Path, now_iso: str) -> list[dict]:
     """Repeats and violations a lesson's trigger proves without the model.
 
-    A failing shell command that matches the trigger of a lesson of this project is the
-    lesson's situation again: a violation when the session had the lesson in its index, else
-    a repeat. Each session counts once, so a segment of a session already counted adds nothing.
+    A failing shell command that matches the trigger of a lesson of this project, or whose
+    output matches its error trigger, is the lesson's situation again: a violation when the
+    session had the lesson in its index, else a repeat. Each session counts once, so a segment
+    of a session already counted adds nothing, except that a violation by a command run after
+    the hook had shown the lesson marks the session as one that read it and went on.
     """
     hits: list[dict] = []
     for lesson in list(state.lessons.values()):
-        if (not lesson.trigger or lesson.project_root != str(project_root)
-                or lesson.status not in ("live", "staged") or not _new_session(lesson, segment)):
+        moved = _watched(lesson)
+        if (not (lesson.trigger or lesson.error_trigger) or lesson.project_root != str(project_root)
+                or not (moved or lesson.status in ("live", "staged"))):
+            continue
+        matches = _trigger_matches(lesson, segment)
+        if not matches:
+            continue
+        if moved:
+            if segment.session_id in {a.get("session") for a in lesson.after}:
+                continue
+            evidence, what, _ = matches[0]
+            outcome = _after_promotion(state, segment, project_root, lesson, evidence, "trigger", "REPEAT")
+            if outcome != "after_promotion":
+                continue
+        else:
+            shown = [m for m in matches if _after_showing(lesson, segment, m[2])]
+            evidence, what, _ = (shown or matches)[0]
+            if not _new_session(lesson, segment):
+                if shown and lesson.status == "live":
+                    _mark_after_showing(lesson, segment)
+                continue
+            if lesson.status == "live":
+                outcome = _violated(state, cfg, segment, project_root, lesson.id, evidence, now_iso, bool(shown))
+            else:
+                outcome = _repeat(state, cfg, segment, project_root, lesson.id, evidence, now_iso)
+        hits.append({"verdict": "LESSON_VIOLATED" if outcome == "violated" else "REPEAT",
+                     "lesson_id": lesson.id, "outcome": outcome, "notes": what + evidence})
+    return hits
+
+
+def _after_showing(lesson: Lesson, segment: Segment, sig: Signal) -> bool:
+    """True when the failing command matched the lesson's command trigger and the hook had shown the
+    lesson in this session before the agent made the call: the hook's text reaches the agent with the
+    result of the command it fired on, so a showing at least a second before the call came back to the
+    agent first. Commands called together fire together and read nothing of each other's showing.
+
+    A signal without its call time (a transcript read before it was kept) needs two showings before
+    its result instead.
+    """
+    if not lesson.trigger or not sig.command:
+        return False
+    try:
+        if not re.search(lesson.trigger, shell_text(sig.command)):
+            return False
+    except re.error:
+        return False
+    times = [ts for ts in map(parse_ts, lesson.fire_times.get(segment.session_id, [])) if ts is not None]
+    call = parse_ts(sig.called)
+    if call is not None:
+        return any(ts <= call - _SHOWN_BEFORE for ts in times)
+    at = parse_ts(sig.ts)
+    return at is not None and sum(1 for ts in times if ts < at) >= 2
+
+
+# the hook logs its showings to the second: one this far before a call surely came before it
+_SHOWN_BEFORE = timedelta(seconds=1)
+
+
+def _mark_after_showing(lesson: Lesson, segment: Segment) -> None:
+    """A session already counted turns out to have broken the lesson after the hook showed it too."""
+    for entry in lesson.evidence:
+        if isinstance(entry, dict) and entry.get("session") == segment.session_id and entry.get("violated") is True:
+            entry["after_showing"] = True
+
+
+def _trigger_matches(lesson: Lesson, segment: Segment) -> list[tuple[str, str, Signal]]:
+    """Every failed shell command a lesson's trigger or error trigger matches: (evidence, note, signal).
+
+    The trigger is read against the command, the error trigger against what it printed.
+    """
+    checks = []
+    for trigger, on_output, note in (
+            (lesson.trigger, False, i18n.t("the lesson's command pattern matched, the model was not called: ",
+                                           "совпал шаблон команды урока, модель не вызывалась: ")),
+            (lesson.error_trigger, True, i18n.t("the lesson's error pattern matched, the model was not called: ",
+                                                "совпал шаблон ошибки урока, модель не вызывалась: "))):
+        if not trigger:
             continue
         try:
-            pattern = re.compile(lesson.trigger)
+            checks.append((re.compile(trigger), on_output, note))
         except re.error:
             continue
-        for n, sig in enumerate(segment.signals, 1):
-            if sig.kind in _FAILING and sig.command and pattern.search(shell_text(sig.command)):
-                evidence = f"[{n}] {squash(sig.command)[:160]}"
-                act = _violated if lesson.status == "live" else _repeat
-                outcome = act(state, cfg, segment, project_root, lesson.id, evidence, now_iso)
-                hits.append({"verdict": "LESSON_VIOLATED" if outcome == "violated" else "REPEAT",
-                             "lesson_id": lesson.id, "outcome": outcome,
-                             "notes": i18n.t("the lesson's command pattern matched, the model was not called: ",
-                                                     "совпал шаблон команды урока, модель не вызывалась: ") + evidence})
-                break
-    return hits
+    found = []
+    for n, sig in enumerate(segment.signals, 1):
+        if sig.kind not in _FAILING or not sig.command:
+            continue
+        for pattern, on_output, note in checks:
+            text = sig.text if on_output else shell_text(sig.command)
+            m = pattern.search(text) if text else None
+            if m is None:
+                continue
+            if not on_output:
+                found.append((f"[{n}] {squash(text)[:160]}", note, sig))
+            else:
+                # the command, and the output where the pattern matched: a long log's error is often at its end
+                shown = squash(text[max(0, m.start() - 40):m.end() + 40])[:120]
+                found.append((f"[{n}] {squash(shell_text(sig.command))[:80]} → …{shown}…", note, sig))
+            break
+    return found
 
 
 def _set_offset(state: State, path: Path, record: dict) -> None:
@@ -834,7 +1007,7 @@ def _advance(state: State, cand: _Candidate, dry_run: bool) -> None:
 
 def _finish(state: State, cfg: Config, cand: _Candidate, result: dict, now_iso: str, dry_run: bool) -> None:
     """The segment is done with: count what its failing commands prove by trigger, then move past it."""
-    if not dry_run and any(lesson.trigger for lesson in state.lessons.values()):
+    if not dry_run and any(lesson.trigger or lesson.error_trigger for lesson in state.lessons.values()):
         try:
             root = cand.project_root or project_for(cfg, cand.cwd)
             if root is not None:
@@ -865,7 +1038,7 @@ def _verifier(cfg: Config, llm, result: dict, segment_text: str) -> Verify:
     def verify(fields: dict, cited: list[str]) -> tuple[bool | None, str]:
         result["verify_calls"] += 1
         try:
-            answer = llm(cfg, cfg.reflect_model, build_verify_prompt(fields, cited, segment_text), VERIFY_SCHEMA,
+            answer = llm(cfg, cfg.verify_model, build_verify_prompt(fields, cited, segment_text), VERIFY_SCHEMA,
                          effort=cfg.reflect_effort)
         except LlmError as exc:
             log.warning("the lesson was not verified: %s", error_text(exc))
@@ -1046,9 +1219,7 @@ def run(cfg: Config, state: State, *, now: datetime, llm=run_structured,
         for part, text in enumerate(texts):
             try:
                 # read again for every part: an earlier part may have added a lesson
-                auto = [lesson for lesson in state.lessons.values()
-                        if lesson.project_root == str(project_root)
-                        and lesson.status in ("live", "staged", "retired")]
+                auto = prompt_lessons(state, project_root)
                 prompt = build_prompt(text, project_root, index_text, auto,
                                       state.rejected_cues.get(str(project_root), []), user_rules, project_rules)
             except Exception as exc:

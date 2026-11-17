@@ -7,9 +7,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agent_reflect import (
-    care, clusters, cursor_index, gitops, health, i18n, journal, memory_archive, memory_reads, upstream, usage,
+    care, clusters, cursor_index, effect, gitops, health, i18n, journal, memory_archive, memory_reads, upstream, usage,
 )
-from agent_reflect.edits import INCIDENT_LOG, SKILL_LARGE_CHARS, incident_error, size_error, unified_diff
+from agent_reflect.edits import INCIDENT_LOG, SKILL_LARGE_CHARS, growth_error, incident_error, size_error, unified_diff
 from agent_reflect.config import RUN_ID_FORMAT, Config
 from agent_reflect.gitops import GitError
 from agent_reflect.ledger import Lesson, State, distinct_sessions, parse_ts
@@ -46,6 +46,8 @@ DUE_SLACK = timedelta(days=1)
 # A skill takes a lesson only after it showed up in this many sessions within the window.
 PROMOTION_MIN_SESSIONS = 2
 PROMOTION_WINDOW_DAYS = 30
+# a lesson the user made blocking is theirs to drop: the weekly run neither removes nor absorbs it
+BLOCKING = "the user made it blocking"
 # Violations of a live lesson that make it eligible on their own.
 PROMOTION_MIN_VIOLATIONS = 2
 # One plan may retire (merge away or remove) at most this share of the live and staged
@@ -147,8 +149,13 @@ def _inside_worktree(dest: Path, rel: str) -> Path | None:
 
 # -- merged PRs ------------------------------------------------------------------
 
-def sync_merged_prs(cfg: Config, state: State, git=gitops, token: str | None = None) -> None:
-    """Close the loop on earlier PRs: a merge copies the merged skills into their Cursor copies."""
+def sync_merged_prs(cfg: Config, state: State, git=gitops, token: str | None = None,
+                    now_iso: str | None = None) -> None:
+    """Close the loop on earlier PRs: a merge copies the merged skills into their Cursor copies.
+
+    A merge is dated by GitHub's mergedAt (by the run that saw it, `now_iso`, when GitHub gives
+    none): a moved lesson's effect is counted from then.
+    """
     pending = [pr for pr in state.open_prs if pr.get("status") == "open"]
     if not pending:
         return
@@ -158,14 +165,15 @@ def sync_merged_prs(cfg: Config, state: State, git=gitops, token: str | None = N
         except GitError as exc:
             state.event("git_failed", step="gh_token", error=error_text(exc))
             return
+    now_iso = now_iso or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for pr in pending:
         try:
-            _sync_one(cfg, state, git, token, pr)
+            _sync_one(cfg, state, git, token, pr, now_iso)
         except Exception as exc:  # one bad record must not stop the others or the run
             state.event("git_failed", step="pr_state", url=str(pr.get("url")), error=error_text(exc))
 
 
-def _sync_one(cfg: Config, state: State, git, token: str, pr: dict) -> None:
+def _sync_one(cfg: Config, state: State, git, token: str, pr: dict, now_iso: str) -> None:
     repo = cfg.repos.get(pr.get("repo"))
     if repo is None:
         state.event("git_failed", step="pr_state", url=pr.get("url"), error="unknown repo")
@@ -180,6 +188,15 @@ def _sync_one(cfg: Config, state: State, git, token: str, pr: dict) -> None:
         state.event("pr_closed", repo=pr["repo"], url=pr["url"])
     elif pr_status == "MERGED" and _copy_merged(state, git, repo, pr):
         pr["status"] = "merged"
+        try:
+            merged_at = git.pr_merged_at(repo, pr["url"], token)
+        except GitError as exc:
+            state.event("git_failed", step="pr_merged_at", url=pr["url"], error=error_text(exc))
+            merged_at = None
+        pr["merged_at"] = merged_at or now_iso  # GitHub's time; else the run that saw the merge
+        for lesson in state.lessons.values():
+            if lesson.promoted_pr == pr["url"] and lesson.status == "promoted" and not lesson.moved_since:
+                lesson.moved_since = pr["merged_at"]
 
 
 def _copy_merged(state: State, git, repo: Path, pr: dict) -> bool:
@@ -222,10 +239,16 @@ def _copy_merged(state: State, git, repo: Path, pr: dict) -> bool:
 
 def build_plan_prompt(cfg: Config, auto: list[Lesson], eligible_ids: set[str],
                       user_texts: dict[str, str], user_files: dict[str, list[dict]],
-                      targets: list[Target]) -> str:
+                      targets: list[Target], now: datetime | None = None) -> str:
+    now = now or datetime.now(timezone.utc)
+    # the numbers each decision stands on: a merge or a removal names them (Harness²: evidence over intuition)
     lessons = (
-        f"{lesson.id} | проект {lesson.project_root} | {lesson.status} | {lesson.confidence} | "
-        f"повторов: {lesson.repeats} | к переносу: {'да' if lesson.id in eligible_ids else 'нет'} | "
+        f"{lesson.id} | проект {lesson.project_root} | {lesson.status} | вид: {lesson.kind} | {lesson.confidence} | "
+        f"повторов: {lesson.repeats} | сессий за {PROMOTION_WINDOW_DAYS} дней: "
+        f"{distinct_sessions(lesson, now, PROMOTION_WINDOW_DAYS)} | нарушений: {lesson.violations} | "
+        f"прочтений: {lesson.reads} | показов хуком: {lesson.fires} | "
+        f"блокирует: {'да' if lesson.block else 'нет'} | "
+        f"к переносу: {'да' if lesson.id in eligible_ids else 'нет'} | "
         f"Когда: {lesson.cue} → {lesson.lesson}"
         for lesson in auto
     )
@@ -253,8 +276,12 @@ def build_edit_prompt(target: Target, text: str, lessons: list[Lesson],
     if reason:
         lesson_block = f"Причина переноса: {reason}\n\n{lesson_block}".rstrip()
     rules = "\n\n".join(f"### {Path(path).name}\n{_TAGS.defuse(body)}" for path, body in user_texts)
+    budget = ("\n- Этот файл агент читает целиком в каждой сессии, поэтому он не должен расти: правка может "
+              "добавить в него не больше одной строки. Добавляешь правило — сожми в него или убери рядом то, "
+              "что оно покрывает; если так не выходит, ответь `skip: true`." if _is_rules(target) else "")
     return load_template("consolidate_edit.md").substitute(
         nonce=nonce(),
+        budget=budget,
         target=target.key,
         text=_TAGS.defuse(text),
         lessons=lesson_block or "—",
@@ -367,6 +394,8 @@ class _Run:
         try:
             if items := care.lessons(self.state, self.now):
                 out["care"] = items
+            if items := effect.check(self.state, self.now):
+                out["effects"] = items
             if rules := care.broken_rules(journal.load(self.cfg), parse_ts(self.since)):
                 out["broken_rules"] = rules
         except Exception as exc:  # advice for the digest must not cost the digest
@@ -466,7 +495,7 @@ class _Run:
         if not auto and not self.user_texts:
             return {}
         prompt = build_plan_prompt(self.cfg, auto, self.eligible_ids, self.user_texts,
-                                   self.user_files, targets)
+                                   self.user_files, targets, self.now)
         try:
             plan = self.llm(self.cfg, self.cfg.consolidate_model, prompt, PLAN_SCHEMA,
                             effort=self.cfg.consolidate_effort)
@@ -519,6 +548,8 @@ class _Run:
             lesson = self.live_lesson(lesson_id)
             if lesson is None or lesson.id == keep.id or lesson in absorbed:
                 self.invalid(f"merge absorb {lesson_id}", "not another live or staged auto-lesson")
+            elif lesson.block:
+                self.invalid(f"merge absorb {lesson_id}", BLOCKING)
             elif (lesson.project_root, lesson.memory_dir) != (keep.project_root, keep.memory_dir):
                 self.invalid(f"merge absorb {lesson_id}", "lessons of different projects")
             else:
@@ -543,7 +574,7 @@ class _Run:
             return
         group = (keep, *gone)
         merged = replace(keep, repeats=keep.repeats + sum(lesson.repeats for lesson in gone),
-                         evidence=[*keep.evidence, *(e for lesson in gone for e in lesson.evidence)],
+                         evidence=[*keep.evidence, *absorbed_evidence(e for lesson in gone for e in lesson.evidence)],
                          violations=sum(lesson.violations for lesson in group),
                          last_violated_at=max((x.last_violated_at for x in group if x.last_violated_at), default=None),
                          reads=max(lesson.reads for lesson in group),  # one file read is one read, wherever
@@ -568,6 +599,9 @@ class _Run:
         lesson = self.live_lesson(lesson_id)
         if lesson is None:
             self.invalid(f"removal {lesson_id}", "not a live or staged auto-lesson")
+            return
+        if lesson.block:
+            self.invalid(f"removal {lesson_id}", BLOCKING)
             return
         if not self.within_cap(1):
             self.invalid(f"removal {lesson_id}", "removal_cap")
@@ -657,7 +691,7 @@ class _Run:
         if not old or old == new:
             self.state.event("edit_failed", target=key, error="the edit has no change")
             return None
-        too_big = size_error(old, new)
+        too_big = size_error(old, new) or (growth_error(old, new) if _is_rules(promo.target) else None)
         if too_big is not None:
             self.state.event("edit_failed", target=key, error=too_big)
             return None
@@ -680,12 +714,17 @@ class _Run:
         for lesson in promo.lessons:
             previous = lesson.status
             if self.delete(lesson, "promoted"):
+                # still watched: effect.check gives the move its verdict
+                lesson.promoted_at, lesson.promoted_to, lesson.promoted_pr = self.now_iso, promo.target.key, pr_url or ""
+                lesson.moved_since = None if pr_url else self.now_iso  # a PR's rule is there from its merge
                 self.journal("retire", lesson, previous, target=promo.target.key, pr_url=pr_url)
             else:
                 # still in memory and no longer ours to track: the user decides what to do with it
                 lesson.status = "user_owned"
         for path in promo.files:
             self.state.user_rule_repeats.pop(path, None)
+        self.state.moves.append({"target": promo.target.key, "at": self.now_iso, "pr_url": pr_url or "",
+                                 "run_id": self.run_id})
         self.promoted.append({
             "target": promo.target.key,
             "summary": edit.summary,
@@ -831,6 +870,12 @@ class _Run:
         return scrub(body)
 
 
+def absorbed_evidence(evidence) -> list[dict]:
+    """An absorbed lesson's evidence for the lesson it merges into: a hook showing was of its own
+    trigger, so whether a violation came after one says nothing about the kept lesson's."""
+    return [{k: v for k, v in e.items() if k != "after_showing"} if isinstance(e, dict) else e for e in evidence]
+
+
 def _is_rules(target: Target) -> bool:
     return target.kind == "repo" and target.rel_path == "CLAUDE.md"
 
@@ -877,7 +922,7 @@ def run(cfg: Config, state: State, *, now: datetime, llm=run_structured, git=git
             if rebalance(state, cfg, project_root, memory_dir, ctx.now_iso):
                 ctx.touched.add((project_root, memory_dir))
         ctx.journal_changes(before, {("live", "staged"): "demote", ("staged", "live"): "promote"})
-        sync_merged_prs(cfg, state, git=git)
+        sync_merged_prs(cfg, state, git=git, now_iso=ctx.now_iso)
         targets = registry(cfg)
         plan = ctx.plan(targets)
     except Exception as exc:  # nothing promoted yet: stop, and retry on the next tick
