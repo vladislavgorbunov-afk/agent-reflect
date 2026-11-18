@@ -11,7 +11,6 @@ from typing import Iterable
 from agent_reflect.scrub import scrub
 
 ERROR_MAX = 300
-_ATTRIBUTION_RE = re.compile(r"\A<!--.*?-->\n")
 
 
 def nonce() -> str:
@@ -20,9 +19,9 @@ def nonce() -> str:
 
 
 def load_template(name: str) -> Template:
-    """prompts/<name> as a Template, without a leading attribution comment."""
+    """prompts/<name> as a Template."""
     raw = resources.files("agent_reflect").joinpath("prompts", name).read_text(encoding="utf-8")
-    return Template(_ATTRIBUTION_RE.sub("", raw, count=1))
+    return Template(raw)
 
 
 class DataTags:

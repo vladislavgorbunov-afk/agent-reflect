@@ -4,7 +4,7 @@ A lesson the weekly run moved into a skill or CLAUDE.md leaves memory. The night
 watching its mistake (by its triggers, and by the model, which sees it marked as moved) and
 records each session that made it again after the move. Once WINDOW has passed since the move
 took effect (at once for a personal skill, at the merge for a pull request), the move gets one
-verdict, after Harness²'s edit-row verdicts, preferring "confounded" when unsure:
+verdict, preferring "confounded" when unsure:
 
 - confounded: another move changed the same target in or around the window, so a change in
   the count cannot be put down to this one (checked first);

@@ -13,7 +13,7 @@ DIFF_MAX_LINES = 60
 INCIDENT_LOG = "incident_log"
 SKILL_LARGE_CHARS = 24_000  # past this a skill gets an advisory, never a refusal
 # lines an edit may add to a file every session loads whole (a project's CLAUDE.md): a rule that
-# goes in takes the place of one it covers, so the file the agent always reads does not grow (Harness²)
+# goes in takes the place of one it covers, so the file the agent always reads does not grow
 ALWAYS_ON_NET_LINES = 1
 # Standards whose names look like ticket keys.
 _NOT_TICKETS = frozenset({"UTF", "SHA", "ISO", "RFC", "HTTP", "TLS", "SSL", "AES", "RSA", "MD", "CVE", "IPV"})
