@@ -5,7 +5,8 @@ A lesson with a trigger (a regex over a shell command) is shown to the agent by
 path) when it is about to edit such a file; one with an error trigger (a regex over what a
 failed shell command printed) right after such a failure. The user's own rules (`guard add`)
 are shown the same way. This module keeps the hook's rules file in step with the ledger, counts the hook's
-fires, and wires the hook into the user's Claude Code settings.
+fires, and wires the hook into the user's Claude Code settings, together with the session-start hook
+(`session_hook.py`, which notes the repository a session started in for the nightly run).
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ FIRED_SESSIONS_MAX = 50
 FIRE_TIMES_MAX = 20
 TRIGGER_MAX = 200
 HOOK_MARK = "agent_reflect/guard_hook.py"  # what tells our entry in settings.json from the user's
+SESSION_HOOK_MARK = "agent_reflect/session_hook.py"
 HOOK_MATCHER = "^(Bash|Edit|Write|NotebookEdit)$"
 # after a shell command: what it printed is matched against the error triggers
 AFTER_EVENTS = ("PostToolUse", "PostToolUseFailure")
@@ -54,8 +56,8 @@ def guard_dir(cfg: Config) -> Path:
     return cfg.home / ".claude" / "agent-reflect"
 
 
-def hook_command(cfg: Config) -> str:
-    script = cfg.repo_dir / "agent_reflect" / "guard_hook.py"
+def hook_command(cfg: Config, mark: str = HOOK_MARK) -> str:
+    script = cfg.repo_dir / mark
     return f'/usr/bin/python3 "{script}" 2>/dev/null || true'
 
 
@@ -227,19 +229,23 @@ def _load_settings(path: Path) -> dict:
 
 def _is_ours(entry) -> bool:
     return isinstance(entry, dict) and any(
-        isinstance(h, dict) and HOOK_MARK in str(h.get("command", "")) for h in entry.get("hooks") or [])
+        isinstance(h, dict) and any(mark in str(h.get("command", "")) for mark in (HOOK_MARK, SESSION_HOOK_MARK))
+        for h in entry.get("hooks") or [])
 
 
 def _our_entries(cfg: Config) -> dict[str, dict]:
-    """Our entry for each event: before a tool runs (shell commands and edits), after a shell command.
+    """Our entry for each event: before a tool runs (shell commands and edits), after a shell command,
+    and at every session start (no matcher: a new session, a resume, a /clear, a compaction).
 
     After a shell command the hook starts only while some rule is over an error: a shell test is
     cheap, Python's start after every command is not.
     """
     hook = {"type": "command", "command": hook_command(cfg), "timeout": 5}
     after = {**hook, "command": f'test -e "{guard_dir(cfg) / ERROR_RULES_MARK}" && ' + hook_command(cfg)}
+    start = {"type": "command", "command": hook_command(cfg, SESSION_HOOK_MARK), "timeout": 5}
     return {"PreToolUse": {"matcher": HOOK_MATCHER, "hooks": [hook]},
-            **{event: {"matcher": AFTER_MATCHER, "hooks": [dict(after)]} for event in AFTER_EVENTS}}
+            **{event: {"matcher": AFTER_MATCHER, "hooks": [dict(after)]} for event in AFTER_EVENTS},
+            "SessionStart": {"hooks": [start]}}
 
 
 def install_hook(cfg: Config) -> bool:
