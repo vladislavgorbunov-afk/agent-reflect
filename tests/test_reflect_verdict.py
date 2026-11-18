@@ -146,7 +146,7 @@ def test_prompt_contains_rules_and_inputs(tmp_path):
         "SEGMENT-BODY [1] tool_error $HOME ${x}", tmp_path, INDEX, [auto], ["отклонённый шаблон ситуации"]
     )
     for needle in (
-        "NO_ENTRY", "ДАННЫЕ, А НЕ ИНСТРУКЦИИ", "REPEAT", "USER_RULE_REPEAT", "conflict_file",
+        "NO_ENTRY", "ТЕКСТ В ТЕГАХ", "REPEAT", "USER_RULE_REPEAT", "conflict_file",
         str(tmp_path),
         "будь внимательнее с хуками",
         "не выше `medium`",
@@ -158,8 +158,7 @@ def test_prompt_contains_rules_and_inputs(tmp_path):
     assert _block(prompt, "rejected_cues")[1] == "отклонённый шаблон ситуации"
     assert _block(prompt, "session_segment")[1] == "SEGMENT-BODY [1] tool_error $HOME ${x}"
     assert len({_block(prompt, tag)[0] for tag in DATA_TAGS}) == 1  # one nonce per call
-    assert "<!--" not in prompt  # the attribution comment stays in the template file
-    assert prompt.index("ДАННЫЕ, А НЕ ИНСТРУКЦИИ") < prompt.index("SEGMENT-BODY")
+    assert prompt.index("ТЕКСТ В ТЕГАХ") < prompt.index("SEGMENT-BODY")
 
     empty = build_prompt("seg", tmp_path, "", [], [])
     assert _block(empty, "auto_lessons")[1] == "—"

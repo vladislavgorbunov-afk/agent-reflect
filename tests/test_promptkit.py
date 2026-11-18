@@ -7,9 +7,8 @@ from agent_reflect.promptkit import ERROR_MAX, DataTags, error_text, load_templa
 SECRET = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
 
 
-def test_load_template_drops_only_a_leading_attribution_comment():
-    reflect = load_template("reflect.md").template
-    assert not reflect.startswith("<!--") and reflect.startswith("Ты разбираешь")
+def test_load_template_reads_the_prompt_file_whole():
+    assert load_template("reflect.md").template.startswith("Ты разбираешь")
     assert load_template("consolidate_plan.md").template.startswith("Ты проводишь")
 
 

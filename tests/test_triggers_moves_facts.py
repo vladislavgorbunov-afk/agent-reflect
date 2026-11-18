@@ -1,4 +1,4 @@
-"""What agent-reflect took from Harness² (google-research/harness2) on the second reading.
+"""Error triggers, blocking rules, verdicts on moves, fact lessons and the second look on another model.
 
 - the second look at a new lesson runs on another model: two samples of one model share its biases;
 - a lesson whose mistake shows only in the error text gets a trigger over that text;

@@ -348,4 +348,4 @@ Changes land through a pull request into `master`. The `tests` check (`.github/w
 
 ## License
 
-MIT, except what is adapted from [Harness²](https://github.com/google-research/harness2) (Apache-2.0): see [third_party/harness2](third_party/harness2/NOTICE.md).
+MIT: see [LICENSE](LICENSE).

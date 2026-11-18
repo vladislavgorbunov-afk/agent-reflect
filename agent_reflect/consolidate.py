@@ -241,7 +241,7 @@ def build_plan_prompt(cfg: Config, auto: list[Lesson], eligible_ids: set[str],
                       user_texts: dict[str, str], user_files: dict[str, list[dict]],
                       targets: list[Target], now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
-    # the numbers each decision stands on: a merge or a removal names them (Harness²: evidence over intuition)
+    # the numbers each decision stands on: a merge or a removal names them
     lessons = (
         f"{lesson.id} | проект {lesson.project_root} | {lesson.status} | вид: {lesson.kind} | {lesson.confidence} | "
         f"повторов: {lesson.repeats} | сессий за {PROMOTION_WINDOW_DAYS} дней: "

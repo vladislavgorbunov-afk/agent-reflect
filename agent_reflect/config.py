@@ -116,7 +116,7 @@ class Config:
     reflect_model: str = "claude-sonnet-5-5"
     consolidate_model: str = "claude-opus-5-5"
     # the second look at a new lesson: another model than the one that wrote it, since two
-    # samples of one model share its biases and agree for the same wrong reason (Harness²)
+    # samples of one model share its biases and agree for the same wrong reason
     verify_model: str = "claude-opus-5-5"
     # passed as --effort so the user's own global effort never applies to background calls
     reflect_effort: str = "medium"
