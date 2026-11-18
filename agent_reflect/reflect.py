@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from agent_reflect import cursor_index, guard, health, i18n, usage
+from agent_reflect import cursor_index, guard, health, i18n, session_roots, usage
 from agent_reflect.config import Config
 from agent_reflect.guard_hook import shell_text
 from agent_reflect.ledger import Lesson, State, normalize_cue, parse_ts, snapshot_baseline
@@ -823,9 +823,15 @@ def _write_failed(state: State, segment: Segment, lesson: Lesson, exc: Exception
     return "write_failed"
 
 
-def project_for(cfg: Config, cwd: str | None) -> Path | None:
-    """The project a session belongs to, or None for scratch dirs and Claude's own tree."""
+def project_for(cfg: Config, cwd: str | None, noted: str | None = None) -> Path | None:
+    """The project a session belongs to, or None for scratch dirs and Claude's own tree.
+
+    Git answers for the folder the session started in. When that folder is gone (a worktree
+    removed before the night), `noted` answers: the root the session-start hook wrote down.
+    """
     root = resolve_project_root(cwd)
+    if root is None and noted:
+        root = Path(noted)
     if root is None or any(Path(root).is_relative_to(d) for d in cfg.no_project_roots):
         return None
     return root
@@ -841,6 +847,7 @@ class _Candidate:
     cwd: str | None
     project_root: Path | None
     weight: float
+    noted: str | None = None  # the root the session-start hook wrote down, for a folder gone by now
 
 
 def _weight(segment: Segment, age_seconds: float) -> float:
@@ -986,12 +993,24 @@ def _set_offset(state: State, path: Path, record: dict) -> None:
         state.health_offsets.pop(key, None)
 
 
+def _session_file(path: Path) -> Path:
+    """The transcript of the session a transcript belongs to: a subagent's parent, else itself."""
+    if is_subagent(path):
+        # <project dir>/<session-id>/subagents/agent-*.jsonl sits beside <project dir>/<session-id>.jsonl
+        return path.parents[2] / f"{parent_session_id(path)}.jsonl"
+    return path
+
+
+def noted_root(roots: dict[str, str], path: Path) -> str | None:
+    """What the session-start hook noted for the session of this transcript (subagents: their parent's)."""
+    return roots.get(str(_session_file(path)))
+
+
 def _start_cwd(state: State, path: Path) -> str | None:
     """Where a transcript's session started. A subagent works for its parent's project even
     when it runs in the session's scratchpad, so its cwd is the parent's; its own is the fallback."""
     if is_subagent(path):
-        # <project dir>/<session-id>/subagents/agent-*.jsonl sits beside <project dir>/<session-id>.jsonl
-        parent = path.parents[2] / f"{parent_session_id(path)}.jsonl"
+        parent = _session_file(path)
         cwd = state.sessions.get(str(parent), {}).get("cwd")
         if not cwd and parent.is_file():
             cwd = session_cwd(parent)
@@ -1009,7 +1028,7 @@ def _finish(state: State, cfg: Config, cand: _Candidate, result: dict, now_iso: 
     """The segment is done with: count what its failing commands prove by trigger, then move past it."""
     if not dry_run and any(lesson.trigger or lesson.error_trigger for lesson in state.lessons.values()):
         try:
-            root = cand.project_root or project_for(cfg, cand.cwd)
+            root = cand.project_root or project_for(cfg, cand.cwd, cand.noted)
             if root is not None:
                 for hit in trigger_hits(state, cfg, cand.segment, root, now_iso):
                     result["outcomes"][hit["outcome"]] += 1
@@ -1125,6 +1144,8 @@ def run(cfg: Config, state: State, *, now: datetime, llm=run_structured,
         state.reads_since = now_iso  # lesson reads are counted from this run on
     if not dry_run:
         _guard(state, result, "guard_fires_unread", lambda: guard.merge_fires(cfg, state))
+        session_roots.rotate(cfg)
+    roots = session_roots.load(cfg)
     if not state.subagent_baseline_done:
         # the first run that reads subagents: their history up to now is no backlog
         untracked = [t for t in transcripts if is_subagent(t) and str(t) not in state.sessions]
@@ -1164,12 +1185,12 @@ def run(cfg: Config, state: State, *, now: datetime, llm=run_structured,
             cwd = info.get("cwd") or _start_cwd(state, path)
             result["segments_seen"] += 1
             cand = _Candidate(path, info, stat.st_size, segment, cwd, None,
-                              _weight(segment, now.timestamp() - stat.st_mtime))
+                              _weight(segment, now.timestamp() - stat.st_mtime), noted_root(roots, path))
             if not worth_asking(segment):
                 result["no_signals"] += 1
                 _finish(state, cfg, cand, result, now_iso, dry_run)
                 continue
-            cand.project_root = project_for(cfg, cwd)
+            cand.project_root = project_for(cfg, cwd, cand.noted)
             if cand.project_root is None:
                 outcomes["no_project"] += 1
                 if not dry_run:

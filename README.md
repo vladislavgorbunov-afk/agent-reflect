@@ -82,6 +82,8 @@ flowchart LR
 
 **Reads what is new.** Only the parts of your transcripts it has not read yet, across every project in `~/.claude/projects`, subagent transcripts included. A transcript written to in the last two hours waits for the next run.
 
+A session belongs to the project of the folder it started in, and a subagent to its parent's. Git says whose checkout the folder is, so a session in a linked worktree counts for the main repository. A worktree is often removed before the night, and then git has nothing to answer: for that, a hook at every session start notes the main repository of a session started in a worktree (`session-roots.jsonl`), and the night uses the note when the folder is gone.
+
 **Finds the moments worth learning from**, before any model is called:
 
 - a tool call that failed, and a quiet failure the tool did not report as one (`command not found`, a traceback, `Permission denied`, a non-zero exit code);
@@ -115,7 +117,7 @@ A hook before Bash, Edit, Write and NotebookEdit, and after Bash. When a command
 
 The hook reminds; it blocks only what you told it to. A lesson the agent broke in two sessions by a command run after the hook had already shown it there (the hook's text reaches the agent with the result of the command it fired on, so the first such command never counts) is named in the digest, and `agent-reflect guard block <id>` makes the hook refuse a command its trigger matches, with the lesson as the reason, until the agent rewrites the command (`guard unblock` lifts it). agent-reflect never turns this on by itself. Run from a Claude Code shell (`CLAUDECODE=1`), it refuses `guard block` and `guard unblock`, and every other way to take a blocking lesson away (`guard set` or `unset` on it, `retire` of it, `guard off` or `uninstall` while one blocks): you run those in your own terminal. That stops the obvious ways, not an agent set on getting around it. The weekly run never removes a blocking lesson or merges it into another. Every showing is counted, so the digest can tell which lessons are used and which only take up room.
 
-After an update that adds hook events, run `agent-reflect guard on` once to add them to `~/.claude/settings.json`.
+After an update that adds hook events, run `agent-reflect guard on` once to add them to `~/.claude/settings.json`. `guard on` and `guard off` add and remove the session-start hook too.
 
 ### Once a week
 
@@ -155,7 +157,7 @@ flowchart LR
 
     subgraph A ["agent-reflect's files"]
         st("<b>state.json</b><br/>every lesson<br/>and its counts"):::night
-        hook("<b>Hook files</b><br/>guard-rules.json<br/>guard-fires.jsonl"):::work
+        hook("<b>Hook files</b><br/>guard-rules.json<br/>guard-fires.jsonl<br/>session-roots.jsonl"):::work
         st <-->|"patterns out,<br/>showings back"| hook
     end
 
@@ -270,7 +272,7 @@ uv sync
 .venv/bin/agent-reflect install
 ```
 
-`install` writes two launchd agents (`local.agent-reflect.reflect` and `local.agent-reflect.consolidate`) and adds the guard hook to `~/.claude/settings.json`. On its first run it marks what is already in your transcripts as read, so it only learns from sessions after the install.
+`install` writes two launchd agents (`local.agent-reflect.reflect` and `local.agent-reflect.consolidate`) and adds its hooks to `~/.claude/settings.json`: the guard hook and the session-start hook. On its first run it marks what is already in your transcripts as read, so it only learns from sessions after the install.
 
 Turn off Claude Code's built-in memory consolidation, or agent-reflect will not touch memory:
 

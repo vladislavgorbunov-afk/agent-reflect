@@ -237,7 +237,7 @@ def test_the_hook_goes_in_after_bash_and_after_a_failed_bash_and_comes_out_of_bo
     cfg = Config.under(tmp_path)
     assert guard.install_hook(cfg) is True and guard.install_hook(cfg) is False
     hooks = json.loads(cfg.claude_settings.read_text(encoding="utf-8"))["hooks"]
-    assert sorted(hooks) == ["PostToolUse", "PostToolUseFailure", "PreToolUse"]
+    assert sorted(hooks) == ["PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionStart"]
     for event in ("PostToolUse", "PostToolUseFailure"):
         (entry,) = hooks[event]
         assert entry["matcher"] == "^Bash$" and guard.HOOK_MARK in entry["hooks"][0]["command"]

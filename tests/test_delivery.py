@@ -717,7 +717,7 @@ def test_the_model_is_told_of_retired_lessons_so_it_does_not_write_them_again(wo
 # the baseline: past sessions read by today's detector, nothing written to memory
 # ======================================================================================
 
-from agent_reflect import baseline  # noqa: E402
+from agent_reflect import baseline, session_roots  # noqa: E402
 from agent_reflect.llm import LlmError  # noqa: E402
 
 UTC = timezone.utc
@@ -785,6 +785,16 @@ def test_a_part_the_model_did_not_answer_leaves_its_answers_out_of_the_rate(worl
     out = _baseline(world, Counting(fail_on=("session s2",)))
     assert (out["sessions"], out["calls"], out["errors"]) == (1, 2, 1)
     assert (out["replies"], out["episodes"]) == (3, 3)
+
+
+def test_the_baseline_reads_a_session_whose_worktree_is_gone_by_the_root_noted_at_its_start(world, monkeypatch):
+    monkeypatch.setattr(reflect, "resolve_project_root", lambda cwd: None)
+    p = world.add("a", _talk("2026-10-21", 3))
+    noted = guard.guard_dir(world.cfg) / session_roots.ROOTS_NAME
+    noted.parent.mkdir(parents=True, exist_ok=True)
+    noted.write_text(json.dumps({"transcript": str(p), "root": str(world.root)}) + "\n", encoding="utf-8")
+    out = _baseline(world, Counting(), dry_run=True)
+    assert (out["sessions"], out["replies"]) == (1, 3)
 
 
 def test_a_second_baseline_run_asks_only_about_what_the_first_did_not_get(world):
