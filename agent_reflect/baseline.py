@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, tzinfo
 from pathlib import Path
 
-from . import reflect
+from . import reflect, session_roots
 from .config import Config
 from .journal import spent_summary
 from .ledger import State, parse_ts
@@ -60,6 +60,7 @@ def plan(cfg: Config, state: State, since: date, until: date, tz: tzinfo) -> lis
     """The parts to ask about: of every session of the user in a project, those with an answer in the days."""
     floor = datetime.combine(since, datetime.min.time(), tz).timestamp()
     parts: list[_Part] = []
+    roots = session_roots.load(cfg)
     for path in list_transcripts(cfg.projects_dir, cfg.own_project_prefixes):
         try:
             if is_subagent(path) or path.stat().st_mtime < floor:
@@ -69,7 +70,7 @@ def plan(cfg: Config, state: State, since: date, until: date, tz: tzinfo) -> lis
                     if (day := _day(t.ts, tz)) is not None and since <= day <= until}
             if not days:
                 continue
-            project_root = reflect.project_for(cfg, reflect._start_cwd(state, path))
+            project_root = reflect.project_for(cfg, reflect._start_cwd(state, path), reflect.noted_root(roots, path))
             if project_root is None:
                 continue
             for text in segment.render_parts(cfg.segment_max_chars, MAX_PARTS):

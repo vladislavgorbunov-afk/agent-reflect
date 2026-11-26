@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import write_jsonl
 
-from agent_reflect import reflect
+from agent_reflect import guard, reflect, session_roots
 from agent_reflect.config import Config
 from agent_reflect.ledger import State
 from agent_reflect.llm import LlmError
@@ -611,6 +611,76 @@ def test_subagent_in_a_scratchpad_belongs_to_its_parent_project(env, monkeypatch
     (lesson,) = env.state.lessons.values()
     assert lesson.project_root == str(env.root)
     assert env.state.sessions[str(sub)]["cwd"] == "/proj"
+
+
+def _record_start(env, transcript, root, transcript_as=None):
+    """What the session-start hook writes for a session that started in a linked worktree.
+
+    `transcript_as` is the transcript path as Claude Code spelled it, when that differs from
+    the path the nightly run lists (another config dir, a symlinked home).
+    """
+    path = guard.guard_dir(env.cfg) / session_roots.ROOTS_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"session": transcript.stem, "transcript": str(transcript_as or transcript), "cwd": "/gone/wt",
+              "root": str(root)}
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+
+def test_a_session_whose_worktree_is_gone_goes_to_the_project_noted_at_its_start(env, monkeypatch):
+    # a worker ran in a worktree that was removed before the night: git can no longer say whose it was
+    monkeypatch.setattr(reflect, "resolve_project_root", lambda cwd: None)
+    p = env.add("w", _signal_entries(cwd="/gone/wt"))
+    _record_start(env, p, env.root)
+    llm = Calls()
+    result = run(env.cfg, env.state, now=NOW, llm=llm)
+    assert result["outcomes"]["no_project"] == 0
+    assert len(llm.prompts) == 1
+
+
+def test_the_note_is_found_by_session_even_when_the_hook_spelled_the_path_differently(env, monkeypatch):
+    monkeypatch.setattr(reflect, "resolve_project_root", lambda cwd: None)
+    p = env.add("w", _signal_entries(cwd="/gone/wt"))
+    _record_start(env, p, env.root, transcript_as=f"/private/elsewhere/.claude/projects/-proj/{p.name}")
+    result = run(env.cfg, env.state, now=NOW, llm=Calls())
+    assert result["outcomes"]["no_project"] == 0
+
+
+def test_a_subagent_of_such_a_session_goes_there_too(env, monkeypatch):
+    env.state.subagent_baseline_done = True
+    monkeypatch.setattr(reflect, "resolve_project_root", lambda cwd: None)
+    parent = env.add(PARENT, [_entry("/gone/wt", "hello there", session=PARENT)])
+    _record_start(env, parent, env.root)
+    _add_subagent(env, "agent-a1", _subagent_entries(cwd="/gone/wt"))
+    result = run(env.cfg, env.state, now=NOW, llm=Calls(result=NEW_HIGH))
+    assert result["outcomes"]["no_project"] == 0
+    (lesson,) = env.state.lessons.values()
+    assert lesson.project_root == str(env.root)
+
+
+def test_the_night_cuts_a_full_log_down_to_the_sessions_still_on_disk(env, monkeypatch):
+    monkeypatch.setattr(session_roots, "COMPACT_BYTES", 10)
+    p = env.add("w", _plain_entries())
+    _record_start(env, p, env.root)
+    _record_start(env, env.tmp / "gone-session.jsonl", env.root)
+    run(env.cfg, env.state, now=NOW, llm=Calls())
+    assert session_roots.load(env.cfg) == {"w": str(env.root)}
+
+
+def test_a_folder_that_is_still_there_wins_over_the_note(env):
+    p = env.add("w", _signal_entries(cwd="/proj"))
+    _record_start(env, p, env.tmp / "elsewhere")
+    run(env.cfg, env.state, now=NOW, llm=Calls(result=NEW_HIGH))
+    (lesson,) = env.state.lessons.values()
+    assert lesson.project_root == str(env.root)
+
+
+def test_a_noted_root_in_a_scratch_dir_is_still_no_project(env, monkeypatch):
+    monkeypatch.setattr(reflect, "resolve_project_root", lambda cwd: None)
+    p = env.add("w", _signal_entries(cwd="/gone/wt"))
+    _record_start(env, p, env.cfg.temp_dirs[0] / "clone")
+    result = run(env.cfg, env.state, now=NOW, llm=Calls())
+    assert result["outcomes"]["no_project"] == 1
 
 
 def test_subagent_without_a_parent_transcript_keeps_its_own_cwd(env, monkeypatch):

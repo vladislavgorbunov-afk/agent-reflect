@@ -4,6 +4,9 @@ agent-reflect reads your Claude Code session transcripts every night, finds the 
 
 It runs locally on macOS under launchd and calls the model through your own `claude` CLI. Nothing is sent anywhere else.
 
+> [!IMPORTANT]
+> **agent-reflect keeps worktrees by default.** The weekly run opens each draft PR from a worktree of its own under `state/worktrees/`, and that worktree stays until a later weekly run sees the PR merged or closed. Only then is it removed, and not even then if it holds uncommitted changes or commits made after the push. Edits a failed push left behind stay in their worktree until the next weekly run rebuilds them and replaces it. To remove each worktree as soon as its PR is open, set `keep_worktrees = false` (see [Configuration](#configuration)).
+
 ## Why
 
 An agent that got something wrong yesterday does not remember it today. You correct it, it agrees, and a week later a new session makes the same mistake: the flag that does not exist on macOS, the test run on the device you said not to touch, "done" before anything was checked. Claude Code has memory files and skills for exactly this, but someone has to write the lesson down, keep it short, and notice when it stops working.
@@ -82,6 +85,8 @@ flowchart LR
 
 **Reads what is new.** Only the parts of your transcripts it has not read yet, across every project in `~/.claude/projects`, subagent transcripts included. A transcript written to in the last two hours waits for the next run.
 
+A session belongs to the project of the folder it started in, and a subagent to its parent's. Git says whose checkout the folder is, so a session in a linked worktree counts for the main repository. A worktree is often removed before the night, and then git has nothing to answer: for that, a hook notes the main repository of a session that starts in a linked worktree (a new session or a `/clear`, not a resume or a compaction) in `session-roots.jsonl`, keyed by session id, and the night uses the note when the folder is gone. Once the file passes 256 KB it is cut down to the first note of each session whose transcript is still on disk.
+
 **Finds the moments worth learning from**, before any model is called:
 
 - a tool call that failed, and a quiet failure the tool did not report as one (`command not found`, a traceback, `Permission denied`, a non-zero exit code);
@@ -115,11 +120,11 @@ A hook before Bash, Edit, Write and NotebookEdit, and after Bash. When a command
 
 The hook reminds; it blocks only what you told it to. A lesson the agent broke in two sessions by a command run after the hook had already shown it there (the hook's text reaches the agent with the result of the command it fired on, so the first such command never counts) is named in the digest, and `agent-reflect guard block <id>` makes the hook refuse a command its trigger matches, with the lesson as the reason, until the agent rewrites the command (`guard unblock` lifts it). agent-reflect never turns this on by itself. Run from a Claude Code shell (`CLAUDECODE=1`), it refuses `guard block` and `guard unblock`, and every other way to take a blocking lesson away (`guard set` or `unset` on it, `retire` of it, `guard off` or `uninstall` while one blocks): you run those in your own terminal. That stops the obvious ways, not an agent set on getting around it. The weekly run never removes a blocking lesson or merges it into another. Every showing is counted, so the digest can tell which lessons are used and which only take up room.
 
-After an update that adds hook events, run `agent-reflect guard on` once to add them to `~/.claude/settings.json`.
+After an update that adds hook events, run `agent-reflect guard on` once to add them to `~/.claude/settings.json`. `guard on` and `guard off` add and remove the session-start hook too.
 
 ### Once a week
 
-- **Moves proven lessons into skills.** A lesson confirmed in at least two sessions within 30 days, or broken twice while it sat in memory, is written into the skill or `CLAUDE.md` where it belongs. Claude Opus picks the place and the edit. Personal skills in `~/.claude/skills` are edited in place with a backup; skills and `CLAUDE.md` in the repositories you list get a draft PR, never a direct commit. An edit that reads like an incident log (dates, PR numbers, ticket keys, session ids) is refused: a skill keeps rules, not history. A project's `CLAUDE.md`, which every session loads whole, may grow by one line per edit at most: a rule that goes in takes the place of one it covers.
+- **Moves proven lessons into skills.** A lesson confirmed in at least two sessions within 30 days, or broken twice while it sat in memory, is written into the skill or `CLAUDE.md` where it belongs. Claude Opus picks the place and the edit. Personal skills in `~/.claude/skills` are edited in place with a backup; skills and `CLAUDE.md` in the repositories you list get a draft PR, never a direct commit. The PR is made in a worktree of its own under `state/worktrees/`, which stays for the review and goes once the PR is merged or closed, unless it then holds uncommitted changes or commits made after the push (the digest says so once). If the push or the PR fails, the edits wait there and the digest says where; the next run rebuilds them from the same lessons and replaces that worktree, so do not publish them by hand. `keep_worktrees = false` removes the worktree at once instead. An edit that reads like an incident log (dates, PR numbers, ticket keys, session ids) is refused: a skill keeps rules, not history. A project's `CLAUDE.md`, which every session loads whole, may grow by one line per edit at most: a rule that goes in takes the place of one it covers.
 - **Checks that the move helped.** A moved lesson leaves memory but is still watched from that moment, while its PR waits too: its triggers, and the model, which sees it marked as moved, count every session that made its mistake again. 30 days after the move took effect (at once for a personal skill, at GitHub's merge time for a PR) it gets a verdict on the sessions started since then: cannot tell (another move, of lessons or of your notes, changed the same file in those weeks), did not help (the mistake came back), too little data (it did not, but it was in fewer than two sessions before either), or helped. A comeback inside the 30 days is reported at once; a move undone with `agent-reflect rollback`, or made after the run rolled back into the same file, is no longer checked.
 - **Tidies memory.** Merges lessons that say the same thing and removes ones that no longer hold, at most a quarter of the lessons per run. The model sees each lesson's numbers (repeats, sessions in 30 days, violations, reads, hook showings) and names them in its reason. For memory entries you wrote yourself it only suggests changes.
 - **Learns from repeated corrections.** Groups your corrections from the last 30 days. Three or more of one kind from at least two sessions become a lesson about how to work, at most two per project a week.
@@ -155,7 +160,7 @@ flowchart LR
 
     subgraph A ["agent-reflect's files"]
         st("<b>state.json</b><br/>every lesson<br/>and its counts"):::night
-        hook("<b>Hook files</b><br/>guard-rules.json<br/>guard-fires.jsonl"):::work
+        hook("<b>Hook files</b><br/>guard-rules.json<br/>guard-fires.jsonl<br/>session-roots.jsonl"):::work
         st <-->|"patterns out,<br/>showings back"| hook
     end
 
@@ -270,7 +275,7 @@ uv sync
 .venv/bin/agent-reflect install
 ```
 
-`install` writes two launchd agents (`local.agent-reflect.reflect` and `local.agent-reflect.consolidate`) and adds the guard hook to `~/.claude/settings.json`. On its first run it marks what is already in your transcripts as read, so it only learns from sessions after the install.
+`install` writes two launchd agents (`local.agent-reflect.reflect` and `local.agent-reflect.consolidate`) and adds its hooks to `~/.claude/settings.json`: the guard hook and the session-start hook. On its first run it marks what is already in your transcripts as read, so it only learns from sessions after the install.
 
 Turn off Claude Code's built-in memory consolidation, or agent-reflect will not touch memory:
 
@@ -294,6 +299,11 @@ language = "auto"
 # Top-level keys go above the first [table]: TOML puts anything below it inside that table.
 cursor_sync = false
 cursor_repos = ["app"]
+
+# Keep the weekly run's worktree after it opens a PR, or when the push fails (on by default).
+# A PR's worktree goes once the PR is merged or closed, unless it holds uncommitted changes or
+# commits made after the push.
+keep_worktrees = true
 
 # Repositories whose skills (.claude/skills/*/SKILL.md, plugins/*/skills/*/SKILL.md)
 # and CLAUDE.md the weekly run may change, through draft PRs.

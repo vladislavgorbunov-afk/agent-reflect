@@ -237,6 +237,25 @@ def test_skill_size_advisories_get_their_own_section():
     assert lines.index("## 🔥 Ошибки прогонов · 0") < i
 
 
+def test_a_kept_unpublished_worktree_is_a_warning_that_names_it():
+    summary = {**empty_summary(), "advisories": [{"ts": "t", "kind": "worktree_unpublished", "repo": "webapp",
+                                                  "path": "/s/worktrees/webapp-2026-10-25"}]}
+    lines = digest.render(summary, {}, "2026-W43").splitlines()
+    i = lines.index("## 📣 Предупреждения · 1")
+    assert "webapp" in lines[i + 2] and "`/s/worktrees/webapp-2026-10-25`" in lines[i + 2]
+    # the next run rebuilds the edits from the same lessons: publishing them by hand would make a second PR
+    assert "следующий прогон" in lines[i + 2] and "опублику" not in lines[i + 2]
+
+
+def test_a_worktree_with_commits_after_its_pr_is_a_warning_that_names_it():
+    summary = {**empty_summary(), "advisories": [{"ts": "t", "kind": "worktree_held", "repo": "webapp",
+                                                  "path": "/s/worktrees/webapp-x", "url": "u1", "commits": 2}]}
+    lines = digest.render(summary, {}, "2026-W43").splitlines()
+    i = lines.index("## 📣 Предупреждения · 1")
+    assert "`/s/worktrees/webapp-x`" in lines[i + 2] and "u1" in lines[i + 2] and "2" in lines[i + 2]
+    assert "оставлен" in lines[i + 2]
+
+
 def _usage(**kw):
     return {"reads": 4, "with_reads": 1, "live": 2, "stalled": False, **kw}
 
