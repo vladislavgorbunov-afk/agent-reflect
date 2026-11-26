@@ -82,7 +82,7 @@ flowchart LR
 
 **Reads what is new.** Only the parts of your transcripts it has not read yet, across every project in `~/.claude/projects`, subagent transcripts included. A transcript written to in the last two hours waits for the next run.
 
-A session belongs to the project of the folder it started in, and a subagent to its parent's. Git says whose checkout the folder is, so a session in a linked worktree counts for the main repository. A worktree is often removed before the night, and then git has nothing to answer: for that, a hook at every session start notes the main repository of a session started in a worktree (`session-roots.jsonl`), and the night uses the note when the folder is gone.
+A session belongs to the project of the folder it started in, and a subagent to its parent's. Git says whose checkout the folder is, so a session in a linked worktree counts for the main repository. A worktree is often removed before the night, and then git has nothing to answer: for that, a hook notes the main repository of a session that starts in a linked worktree (a new session or a `/clear`, not a resume or a compaction) in `session-roots.jsonl`, keyed by session id, and the night uses the note when the folder is gone. Once the file passes 256 KB it is cut down to the first note of each session whose transcript is still on disk.
 
 **Finds the moments worth learning from**, before any model is called:
 

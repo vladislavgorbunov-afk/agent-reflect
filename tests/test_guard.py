@@ -172,6 +172,18 @@ def test_the_session_start_hook_goes_in_beside_the_users_own_and_comes_out_alone
     assert _settings(cfg) == {"hooks": {"SessionStart": [mine]}}
 
 
+def test_guard_on_and_off_say_that_they_add_and_remove_the_session_start_hook_too(cfg, monkeypatch, capsys):
+    # turning the reminders off also stops noting where worktree sessions started: say so
+    monkeypatch.setattr(Config, "default", classmethod(lambda cls: cfg))
+    save_state(State(), cfg.state_file)
+    assert main(["guard", "on"]) == 0
+    assert "session-start hook" in capsys.readouterr().out
+    assert main(["guard", "off"]) == 0
+    assert "session-start hook" in capsys.readouterr().out
+    assert main(["guard", "off"]) == 0
+    assert "session-start hook" in capsys.readouterr().out
+
+
 def test_a_moved_repository_replaces_its_old_hook_entry(cfg, tmp_path):
     guard.install_hook(cfg)
     moved = Config.under(tmp_path / "elsewhere")

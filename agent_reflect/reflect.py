@@ -1002,8 +1002,12 @@ def _session_file(path: Path) -> Path:
 
 
 def noted_root(roots: dict[str, str], path: Path) -> str | None:
-    """What the session-start hook noted for the session of this transcript (subagents: their parent's)."""
-    return roots.get(str(_session_file(path)))
+    """What the session-start hook noted for the session of this transcript (subagents: their parent's).
+
+    Looked up by session id, the transcript's file name, never by path: the hook gets the path
+    as Claude Code spells it, which need not be how this run lists it.
+    """
+    return roots.get(_session_file(path).stem)
 
 
 def _start_cwd(state: State, path: Path) -> str | None:
@@ -1144,7 +1148,7 @@ def run(cfg: Config, state: State, *, now: datetime, llm=run_structured,
         state.reads_since = now_iso  # lesson reads are counted from this run on
     if not dry_run:
         _guard(state, result, "guard_fires_unread", lambda: guard.merge_fires(cfg, state))
-        session_roots.rotate(cfg)
+        session_roots.compact(cfg)
     roots = session_roots.load(cfg)
     if not state.subagent_baseline_done:
         # the first run that reads subagents: their history up to now is no backlog

@@ -792,7 +792,8 @@ def test_the_baseline_reads_a_session_whose_worktree_is_gone_by_the_root_noted_a
     p = world.add("a", _talk("2026-10-21", 3))
     noted = guard.guard_dir(world.cfg) / session_roots.ROOTS_NAME
     noted.parent.mkdir(parents=True, exist_ok=True)
-    noted.write_text(json.dumps({"transcript": str(p), "root": str(world.root)}) + "\n", encoding="utf-8")
+    noted.write_text(json.dumps({"session": p.stem, "transcript": str(p), "root": str(world.root)}) + "\n",
+                     encoding="utf-8")
     out = _baseline(world, Counting(), dry_run=True)
     assert (out["sessions"], out["replies"]) == (1, 3)
 

@@ -523,7 +523,7 @@ def _guard_on(cfg: Config) -> int:
     except (OSError, ValueError) as exc:
         print(f"agent-reflect: guard hook not installed: {scrub(str(exc))[:300]}", file=sys.stderr)
         return 1
-    print(f"{cfg.claude_settings}: guard hook {'added' if changed else 'already there'}")
+    print(f"{cfg.claude_settings}: guard and session-start hooks {'added' if changed else 'already there'}")
     return 0
 
 
@@ -645,7 +645,8 @@ def _cmd_guard(cfg: Config, args: argparse.Namespace) -> int:
     if args.action == "off":
         if _from_agent() and _something_blocks(cfg):
             return _users_only("guard off")
-        print("guard hook removed" if guard.uninstall_hook(cfg) else "guard hook was not installed")
+        print("guard and session-start hooks removed" if guard.uninstall_hook(cfg)
+              else "guard and session-start hooks were not installed")
         return 0
     if args.action == "list":
         return _guard_list(cfg)
