@@ -756,11 +756,14 @@ def test_a_moved_lessons_comeback_keeps_when_its_session_started(env, tmp_path):
 
 
 def test_a_fact_the_user_confirmed_leaves_the_recheck_list(tmp_path, monkeypatch, capsys):
+    from agent_reflect import cli
     from agent_reflect.cli import main
     from agent_reflect.ledger import load_state, save_state
 
     cfg = Config.under(tmp_path)
     monkeypatch.setattr(Config, "default", classmethod(lambda cls: cfg))
+    # the confirmation and the check read one clock: on the real one the fixture's lessons go stale
+    monkeypatch.setattr(cli, "_now", lambda: NOW)
     old = "2026-08-01T00:00:00Z"
     save_state(State(lessons={"f1": _lesson("f1", kind="fact", recheck="git status", live_since=old,
                                             created_at=old, last_read_at=NOW_ISO),
@@ -768,7 +771,8 @@ def test_a_fact_the_user_confirmed_leaves_the_recheck_list(tmp_path, monkeypatch
     assert [c["reason"] for c in care.lessons(load_state(cfg.state_file), NOW)] == ["recheck"]
     assert main(["confirm", "t1"]) == 2 and main(["confirm", "nope"]) == 2
     assert main(["confirm", "f1"]) == 0
-    assert care.lessons(load_state(cfg.state_file), datetime.now(timezone.utc)) == []
+    assert load_state(cfg.state_file).lessons["f1"].rechecked_at == NOW_ISO
+    assert care.lessons(load_state(cfg.state_file), NOW) == []
 
 
 def test_the_digest_says_how_to_confirm_a_fact():
