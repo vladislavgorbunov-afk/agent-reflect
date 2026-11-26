@@ -71,10 +71,23 @@ def prepare_worktree(repo: Path, branch: str, dest: Path, run=subprocess.run) ->
 
 
 def commit_and_push(worktree: Path, paths: list[str], message: str, branch: str,
-                    run=subprocess.run) -> None:
+                    run=subprocess.run) -> str:
+    """Commit the paths and push the branch; returns the pushed commit."""
     _git(worktree, ["add", "--", *paths], run)
     _git(worktree, ["commit", "-m", message], run)
+    sha = _git(worktree, ["rev-parse", "HEAD"], run).strip()
     _git(worktree, ["push", "-u", "origin", branch], run)
+    return sha
+
+
+def commits_since(worktree: Path, sha: str, run=subprocess.run) -> int:
+    """Commits on the worktree's HEAD after `sha`: work done there after the run pushed."""
+    return int(_git(worktree, ["rev-list", "--count", f"{sha}..HEAD"], run).strip())
+
+
+def prune_worktrees(repo: Path, run=subprocess.run) -> None:
+    """Drop git's records of worktrees whose folders are gone."""
+    _git(repo, ["worktree", "prune"], run)
 
 
 def create_draft_pr(worktree: Path, branch: str, title: str, body: str, token: str,
@@ -166,5 +179,7 @@ def commit_diff(repo: Path, sha: str, paths: list[str], run=subprocess.run) -> s
     return _git(repo, ["show", "--format=", "--unified=3", sha, "--", *paths], run, errors="replace")
 
 
-def remove_worktree(repo: Path, dest: Path, run=subprocess.run) -> None:
-    _git(repo, ["worktree", "remove", "--force", str(dest)], run)
+def remove_worktree(repo: Path, dest: Path, run=subprocess.run, force: bool = True) -> None:
+    """Without force git refuses a worktree with modified or untracked files. Ignored files go with
+    it either way, and its commits stay on its branch."""
+    _git(repo, ["worktree", "remove", *(["--force"] if force else []), str(dest)], run)

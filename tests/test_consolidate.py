@@ -6,7 +6,7 @@ import json
 import re
 import shutil
 import subprocess
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -97,8 +97,9 @@ class FakeGit:
 
     def __init__(self, origin: dict[str, str] | None = None, states: dict[str, str] | None = None,
                  main_text: str = "", fail: dict[str, Exception] | None = None, after_prepare=None,
-                 merged_at: dict[str, str] | None = None):
+                 merged_at: dict[str, str] | None = None, later: dict[str, int] | None = None):
         self.origin = origin or {}
+        self.later = later or {}  # worktree path -> commits made there after the run's push
         self.states = states or {}
         self.merged_at = merged_at or {}
         self.main_text = main_text
@@ -131,6 +132,14 @@ class FakeGit:
         self._step("commit_and_push", worktree, list(paths), message, branch)
         self.commits.append({"paths": list(paths), "message": message, "branch": branch,
                              "texts": {p: (Path(worktree) / p).read_text(encoding="utf-8") for p in paths}})
+        return "c0ffee1"
+
+    def commits_since(self, worktree, sha):
+        self._step("commits_since", Path(worktree), sha)
+        return self.later.get(str(worktree), 0)
+
+    def prune_worktrees(self, repo):
+        self._step("prune_worktrees", repo)
 
     def create_draft_pr(self, worktree, branch, title, body, token):
         self._step("create_draft_pr", worktree, branch, title, body, token)
@@ -149,8 +158,8 @@ class FakeGit:
         self._step("file_at_origin_main", repo, rel_path)
         return self.main_text
 
-    def remove_worktree(self, repo, dest):
-        self._step("remove_worktree", repo, dest)
+    def remove_worktree(self, repo, dest, force=True):
+        self._step("remove_worktree", repo, Path(dest), force)
         shutil.rmtree(dest, ignore_errors=True)
 
 
@@ -490,7 +499,8 @@ def test_repo_promotions_share_one_pr_per_repo(env):
     assert "LOCAL WORK" not in commit["texts"][CHECK_LOGIC]
     assert commit["texts"]["CLAUDE.md"] == "# Project rules\n\nKeep commits small.\nRun the gate first.\n"
     assert len(git.prs) == 1 and git.prs[0]["token"] == "tok123"
-    assert git.names()[-1] == "remove_worktree" and git.names().count("remove_worktree") == 1
+    # the PR's checkout stays for its review; it goes once the PR is merged or closed
+    assert "remove_worktree" not in git.names() and (dest / CHECK_LOGIC).exists()
     assert not any("LOCAL WORK" in p for p in llm.edit_prompts)
 
     url = "https://github.com/o/r/pull/1"
@@ -503,6 +513,7 @@ def test_repo_promotions_share_one_pr_per_repo(env):
     assert "+- Run /gate-check first." in diffs["repo:webapp:check-logic"]
     [record] = env.state.open_prs
     assert record["repo"] == "webapp" and record["url"] == url and record["status"] == "open"
+    assert record["worktree"] == str(dest) and record["head"] == "c0ffee1"
     assert record["cursor_sync"] == [{"rel": CHECK_LOGIC, "dst": str(env.cursor_check),
                                       "sha256": _sha(env.cursor_check)}]
     assert "evidence from 2 sessions." in git.prs[0]["body"] and "1 sessions" not in git.prs[0]["body"]
@@ -845,7 +856,8 @@ def test_lone_surrogates_from_the_model_become_events(env):
     ("create_draft_pr", GitError("gh pr failed (1): no permission")),
     ("commit_and_push", RuntimeError("unexpected")),
 ])
-def test_publish_failure_keeps_lessons_and_removes_worktree(env, step, exc):
+def test_publish_failure_keeps_lessons_and_with_keep_off_removes_worktree(env, step, exc):
+    env.cfg = replace(env.cfg, keep_worktrees=False)
     lesson = _lesson(env, "aaaa0001")
     llm = FakeLlm(_plan(promotions=[_promote("repo:webapp:check-logic", [lesson.id])]),
                   edits={"repo:webapp:check-logic": _edit()})
@@ -876,7 +888,70 @@ def test_unexpected_error_in_personal_promotion_does_not_stop_the_run(env, monke
     assert env.state.last_consolidate_at == NOW_ISO
 
 
+@pytest.mark.parametrize("step, exc", [
+    ("commit_and_push", GitError("git failed (1): rejected")),
+    ("create_draft_pr", GitError("gh pr failed (1): no permission")),
+    ("commit_and_push", RuntimeError("unexpected")),
+])
+def test_publish_failure_keeps_the_worktree_with_its_edits_and_says_where(env, step, exc):
+    lesson = _lesson(env, "aaaa0001")
+    llm = FakeLlm(_plan(promotions=[_promote("repo:webapp:check-logic", [lesson.id])]),
+                  edits={"repo:webapp:check-logic": _edit()})
+    git = FakeGit(env.origin, fail={step: exc})
+    summary = _run(env, llm, git)
+
+    dest = env.cfg.worktrees_dir / f"webapp-{DATE}"
+    assert "remove_worktree" not in git.names()
+    assert "- Run /gate-check first." in (dest / CHECK_LOGIC).read_text(encoding="utf-8")
+    assert [(a["kind"], a["repo"], a["path"]) for a in summary["advisories"]] == [
+        ("worktree_unpublished", "webapp", str(dest))]
+    assert lesson.status == "live" and env.state.open_prs == [] and summary["prs"] == []
+
+
+def test_an_earlier_unpublished_worktree_of_the_repo_is_replaced_by_the_new_run(env):
+    old = env.cfg.worktrees_dir / "webapp-2026-10-18"
+    held = env.cfg.worktrees_dir / "webapp-2026-10-11"
+    other = env.cfg.worktrees_dir / "webapp-tools-2026-10-18"  # another repo whose name starts the same
+    for path in (old, held, other):
+        path.mkdir(parents=True)
+    env.state.open_prs = [{"repo": "webapp", "url": "u0", "branch": "b", "status": "open", "created_at": "t",
+                           "cursor_sync": [], "worktree": str(held), "head": "c0ffee1"}]
+    lesson = _lesson(env, "aaaa0001")
+    llm = FakeLlm(_plan(promotions=[_promote("repo:webapp:check-logic", [lesson.id])]),
+                  edits={"repo:webapp:check-logic": _edit()})
+    git = FakeGit(env.origin, states={"u0": "OPEN"})
+    _run(env, llm, git)
+    removed = [c[2] for c in git.calls if c[0] == "remove_worktree"]
+    assert removed == [old] and git.names().index("remove_worktree") < git.names().index("prepare_worktree")
+    assert held.exists() and other.exists()
+
+
+def test_with_keep_worktrees_off_the_pr_worktree_is_removed_at_once(env):
+    env.cfg = replace(env.cfg, keep_worktrees=False)
+    lesson = _lesson(env, "aaaa0001")
+    llm = FakeLlm(_plan(promotions=[_promote("repo:webapp:check-logic", [lesson.id])]),
+                  edits={"repo:webapp:check-logic": _edit()})
+    git = FakeGit(env.origin)
+    summary = _run(env, llm, git)
+
+    dest = env.cfg.worktrees_dir / f"webapp-{DATE}"
+    assert git.names()[-1] == "remove_worktree" and ("remove_worktree", env.webapp, dest, True) in git.calls
+    assert not dest.exists() and "worktree" not in env.state.open_prs[0]
+    assert summary["advisories"] == []
+
+
+def test_a_worktree_the_run_applied_nothing_in_is_removed_even_when_kept(env):
+    lesson = _lesson(env, "aaaa0001")
+    llm = FakeLlm(_plan(promotions=[_promote("repo:webapp:check-logic", [lesson.id])]),
+                  edits={"repo:webapp:check-logic": _edit(old="this text is not in the file")})
+    git = FakeGit(env.origin)
+    summary = _run(env, llm, git)
+    assert ("remove_worktree", env.webapp, env.cfg.worktrees_dir / f"webapp-{DATE}", True) in git.calls
+    assert summary["advisories"] == []
+
+
 def test_created_pr_is_recorded_even_if_cleanup_fails(env):
+    env.cfg = replace(env.cfg, keep_worktrees=False)
     lesson = _lesson(env, "aaaa0001")
     llm = FakeLlm(_plan(promotions=[_promote("repo:webapp:check-logic", [lesson.id])]),
                   edits={"repo:webapp:check-logic": _edit()})
@@ -1245,6 +1320,53 @@ def test_a_merged_pr_records_when_github_says_it_was_merged(env):
     sync_merged_prs(env.cfg, env.state, git=git, now_iso=NOW_ISO)
     # u2: GitHub gave no time, so the run that saw the merge dates it
     assert [p.get("merged_at") for p in env.state.open_prs] == ["2026-10-21T09:00:00Z", NOW_ISO, None]
+
+
+def test_a_merged_or_closed_pr_takes_its_kept_worktree_with_it(env):
+    kept = {u: env.cfg.worktrees_dir / f"webapp-{u}" for u in ("u1", "u2", "u3", "u4")}
+    for u in ("u1", "u2", "u3"):
+        kept[u].mkdir(parents=True)
+    env.state.open_prs = [{"repo": "webapp", "url": u, "branch": "b", "status": "open", "created_at": "t",
+                           "cursor_sync": [], "worktree": str(kept[u]), "head": "c0ffee1"}
+                          for u in ("u1", "u2", "u3", "u4")]
+    git = FakeGit(states={"u1": "MERGED", "u2": "CLOSED", "u3": "OPEN", "u4": "MERGED"})
+    sync_merged_prs(env.cfg, env.state, git=git, now_iso=NOW_ISO)
+    # without --force: a kept worktree with uncommitted changes is not git's to throw away
+    assert [c[1:] for c in git.calls if c[0] == "remove_worktree"] == [
+        (env.webapp, kept["u1"], False), (env.webapp, kept["u2"], False)]
+    assert ("prune_worktrees", env.webapp) in git.calls  # u4's folder was removed by hand: drop its record
+    assert not kept["u1"].exists() and kept["u3"].exists()
+    assert ["worktree" in p for p in env.state.open_prs] == [False, False, True, False]
+
+
+def test_a_kept_worktree_git_will_not_remove_is_retried_each_run_and_reported_once(env):
+    path = env.cfg.worktrees_dir / "webapp-x"
+    path.mkdir(parents=True)
+    env.state.open_prs = [{"repo": "webapp", "url": "u1", "branch": "b", "status": "open", "created_at": "t",
+                           "cursor_sync": [], "worktree": str(path), "head": "c0ffee1"}]
+    refuse = {"remove_worktree": GitError("git failed (128): contains modified or untracked files")}
+    for _ in range(2):
+        sync_merged_prs(env.cfg, env.state, git=FakeGit(states={"u1": "CLOSED"}, fail=refuse), now_iso=NOW_ISO)
+    assert path.exists() and env.state.open_prs[0]["worktree"] == str(path)
+    assert [(e["kind"], e.get("step")) for e in env.state.events].count(("git_failed", "remove_worktree")) == 1
+    git = FakeGit()
+    sync_merged_prs(env.cfg, env.state, git=git, now_iso=NOW_ISO)  # nothing open: the retry needs no token
+    assert git.names() == ["commits_since", "remove_worktree"] and "worktree" not in env.state.open_prs[0]
+
+
+def test_a_kept_worktree_with_commits_after_the_push_stays_and_says_so_once(env):
+    path = env.cfg.worktrees_dir / "webapp-x"
+    path.mkdir(parents=True)
+    env.state.open_prs = [{"repo": "webapp", "url": "u1", "branch": "b", "status": "open", "created_at": "t",
+                           "cursor_sync": [], "worktree": str(path), "head": "c0ffee1"}]
+    for _ in range(2):
+        git = FakeGit(states={"u1": "MERGED"}, later={str(path): 2})
+        sync_merged_prs(env.cfg, env.state, git=git, now_iso=NOW_ISO)
+        assert ("commits_since", path, "c0ffee1") in git.calls and "remove_worktree" not in git.names()
+    assert path.exists() and env.state.open_prs[0]["worktree"] == str(path)
+    held = [e for e in env.state.events if e["kind"] == "worktree_held"]
+    assert [(e["repo"], e["path"], e["url"], e["commits"]) for e in held] == [("webapp", str(path), "u1", 2)]
+    assert "worktree_held" in consolidate.ADVISORY_KINDS
 
 
 def test_gh_gives_the_merge_time_in_utc():

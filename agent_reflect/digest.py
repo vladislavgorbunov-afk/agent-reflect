@@ -135,6 +135,17 @@ def _advisory_line(event: dict) -> str:
                  "the commits between them did not make it into the dev-process-toolkit candidates",
                  f"- {repo}: метка {old} пропала из истории origin/main, новая база — {new}; "
                  "коммиты между ними в кандидаты dev-process-toolkit не попали")
+    if event.get("kind") == "worktree_unpublished":
+        repo, path = event.get("repo", ""), event.get("path", "")
+        return t(f"- {repo}: this week's edits were not published and wait in `{path}` (the cause is in the run "
+                 "errors); the next run rebuilds them from the same lessons and replaces this worktree",
+                 f"- {repo}: правки этой недели не опубликованы и ждут в `{path}` (причина — в ошибках прогонов); "
+                 "следующий прогон соберёт их заново из тех же уроков и заменит этот ворктри")
+    if event.get("kind") == "worktree_held":
+        repo, path, url, commits = event.get("repo", ""), event.get("path", ""), event.get("url", ""), event.get("commits", "?")
+        return t(f"- {repo}: {url} is done, but `{path}` has commits made after the PR was pushed ({commits}): "
+                 "the worktree is kept",
+                 f"- {repo}: {url} закрыт, но в `{path}` есть коммиты после пуша PR ({commits}): ворктри оставлен")
     return _error_line(event)
 
 

@@ -38,7 +38,7 @@ ERROR_KINDS = frozenset({
     "memory_reads_failed", "care_failed", "clusters_failed", "guard_rules_unwritten", "guard_fires_unread",
 })
 # Worth the user's eye in the digest, but nothing failed.
-ADVISORY_KINDS = frozenset({"skill_large", "upstream_rebaselined"})
+ADVISORY_KINDS = frozenset({"skill_large", "upstream_rebaselined", "worktree_unpublished", "worktree_held"})
 LIVE = ("live", "staged")
 ISO = "%Y-%m-%dT%H:%M:%SZ"
 # launchd fires late after sleep, so a run counts as due one day before the full interval.
@@ -157,20 +157,22 @@ def sync_merged_prs(cfg: Config, state: State, git=gitops, token: str | None = N
     none): a moved lesson's effect is counted from then.
     """
     pending = [pr for pr in state.open_prs if pr.get("status") == "open"]
-    if not pending:
-        return
-    if token is None:
+    if pending and token is None:
         try:
             token = git.gh_token()
         except GitError as exc:
             state.event("git_failed", step="gh_token", error=error_text(exc))
-            return
+            pending = []
     now_iso = now_iso or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for pr in pending:
         try:
             _sync_one(cfg, state, git, token, pr, now_iso)
         except Exception as exc:  # one bad record must not stop the others or the run
             state.event("git_failed", step="pr_state", url=str(pr.get("url")), error=error_text(exc))
+    # a done PR's kept worktree goes now, or on a later run once git lets it
+    for pr in state.open_prs:
+        if pr.get("status") != "open" and pr.get("worktree"):
+            _drop_worktree(cfg, state, git, pr)
 
 
 def _sync_one(cfg: Config, state: State, git, token: str, pr: dict, now_iso: str) -> None:
@@ -197,6 +199,38 @@ def _sync_one(cfg: Config, state: State, git, token: str, pr: dict, now_iso: str
         for lesson in state.lessons.values():
             if lesson.promoted_pr == pr["url"] and lesson.status == "promoted" and not lesson.moved_since:
                 lesson.moved_since = pr["merged_at"]
+
+
+def _drop_worktree(cfg: Config, state: State, git, pr: dict) -> None:
+    """A PR that is done with takes the worktree kept for it along, unless someone went on working
+    in it: commits after the run's push, or changes git does not remove without --force. Such a
+    worktree stays, said once; the next run tries again. Never raises."""
+    repo = cfg.repos.get(pr.get("repo"))
+    if repo is None:
+        return  # the repo left the config: nothing to remove the worktree with
+    path = Path(pr["worktree"])
+    try:
+        if not path.exists():
+            git.prune_worktrees(repo)  # removed by hand: drop git's record of it too
+        else:
+            later = git.commits_since(path, pr.get("head") or "HEAD")
+            if later:
+                _note_once(state, pr, "worktree_held", repo=pr.get("repo"), path=str(path), url=pr.get("url"),
+                           commits=later)
+                return
+            git.remove_worktree(repo, path, force=False)
+    except Exception as exc:
+        _note_once(state, pr, "git_failed", step="remove_worktree", url=pr.get("url"), error=error_text(exc))
+        return
+    pr.pop("worktree", None)
+    pr.pop("worktree_noted", None)
+
+
+def _note_once(state: State, pr: dict, kind: str, **fields) -> None:
+    """A kept worktree that cannot go yet is retried every run, but said only once."""
+    if not pr.get("worktree_noted"):
+        state.event(kind, **fields)
+        pr["worktree_noted"] = True
 
 
 def _copy_merged(state: State, git, repo: Path, pr: dict) -> bool:
@@ -761,6 +795,7 @@ class _Run:
         repo = self.cfg.repos[name]
         branch = f"docs/agent-reflect-{self.date}"
         dest = self.cfg.worktrees_dir / f"{name}-{self.date}"
+        self.drop_unpublished(name, repo)
         try:
             self.cfg.worktrees_dir.mkdir(parents=True, exist_ok=True)
             self.git.prepare_worktree(repo, branch, dest)
@@ -779,24 +814,47 @@ class _Run:
             title = f"{COMMIT_SUBJECT} {self.date}"
             body = self.pr_body(applied)
             token = self.token()
-            self.git.commit_and_push(dest, [promo.target.rel_path for promo, _ in applied],
-                                     scrub(f"{title}\n\n{CO_AUTHORED_BY}"), branch)
+            head = self.git.commit_and_push(dest, [promo.target.rel_path for promo, _ in applied],
+                                            scrub(f"{title}\n\n{CO_AUTHORED_BY}"), branch)
             url = self.git.create_draft_pr(dest, branch, title, body, token)
-            self.record_pr(name, url, branch, applied)  # first, so nothing later can lose it
+            # first, so nothing later can lose it
+            self.record_pr(name, url, branch, applied, dest if self.cfg.keep_worktrees else None, head)
         except GitError as exc:
             self.state.event("git_failed", repo=name, step="publish", error=error_text(exc))
         finally:
-            try:
-                self.git.remove_worktree(repo, dest)
-            except Exception as exc:
-                self.state.event("git_failed", repo=name, step="remove_worktree", error=error_text(exc))
+            if applied and self.cfg.keep_worktrees:
+                if url is None:  # the edits never reached a PR: they wait in the worktree
+                    self.state.event("worktree_unpublished", repo=name, path=str(dest))
+            else:
+                try:
+                    self.git.remove_worktree(repo, dest)
+                except Exception as exc:
+                    self.state.event("git_failed", repo=name, step="remove_worktree", error=error_text(exc))
         if url is None:
             return
         for promo, edit in applied:
             self.retire(promo, edit, url, [])
 
-    def record_pr(self, name: str, url: str, branch: str, applied: list[tuple[_Promotion, _Edit]]) -> None:
-        """Remember a created PR. Never raises."""
+    def drop_unpublished(self, name: str, repo: Path) -> None:
+        """An earlier run's worktree of this repo that no PR record holds: its edits never got out,
+        and this run rebuilds them from the same live lessons, so it goes before the new one is made."""
+        held = {pr.get("worktree") for pr in self.state.open_prs if pr.get("worktree")}
+        own = re.compile(re.escape(name) + r"-\d{4}-\d{2}-\d{2}")
+        try:
+            paths = sorted(self.cfg.worktrees_dir.iterdir())
+        except OSError:
+            return
+        for path in paths:
+            if not path.is_dir() or not own.fullmatch(path.name) or str(path) in held:
+                continue
+            try:
+                self.git.remove_worktree(repo, path)
+            except Exception as exc:
+                self.state.event("git_failed", repo=name, step="remove_worktree", error=error_text(exc))
+
+    def record_pr(self, name: str, url: str, branch: str, applied: list[tuple[_Promotion, _Edit]],
+                  worktree: Path | None = None, head: str | None = None) -> None:
+        """Remember a created PR, and the worktree kept for it. Never raises."""
         self.prs.append(url)
         pairs = []
         for promo, _ in applied:
@@ -806,7 +864,8 @@ class _Run:
                 pairs.append({"rel": promo.target.rel_path, "dst": str(copy),
                               "sha256": None if current is None else _sha(current)})
         self.state.open_prs.append({"repo": name, "url": url, "branch": branch, "status": "open",
-                                    "created_at": self.now_iso, "cursor_sync": pairs})
+                                    "created_at": self.now_iso, "cursor_sync": pairs,
+                                    **({"worktree": str(worktree), "head": head} if worktree is not None else {})})
 
     def edit_in_worktree(self, dest: Path, promo: _Promotion) -> _Edit | None:
         rel = promo.target.rel_path

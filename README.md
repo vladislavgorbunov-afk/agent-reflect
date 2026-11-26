@@ -121,7 +121,7 @@ After an update that adds hook events, run `agent-reflect guard on` once to add 
 
 ### Once a week
 
-- **Moves proven lessons into skills.** A lesson confirmed in at least two sessions within 30 days, or broken twice while it sat in memory, is written into the skill or `CLAUDE.md` where it belongs. Claude Opus picks the place and the edit. Personal skills in `~/.claude/skills` are edited in place with a backup; skills and `CLAUDE.md` in the repositories you list get a draft PR, never a direct commit. An edit that reads like an incident log (dates, PR numbers, ticket keys, session ids) is refused: a skill keeps rules, not history. A project's `CLAUDE.md`, which every session loads whole, may grow by one line per edit at most: a rule that goes in takes the place of one it covers.
+- **Moves proven lessons into skills.** A lesson confirmed in at least two sessions within 30 days, or broken twice while it sat in memory, is written into the skill or `CLAUDE.md` where it belongs. Claude Opus picks the place and the edit. Personal skills in `~/.claude/skills` are edited in place with a backup; skills and `CLAUDE.md` in the repositories you list get a draft PR, never a direct commit. The PR is made in a worktree of its own under `state/worktrees/`, which stays for the review and goes once the PR is merged or closed, unless it then holds uncommitted changes or commits made after the push (the digest says so once). If the push or the PR fails, the edits wait there and the digest says where; the next run rebuilds them from the same lessons and replaces that worktree, so do not publish them by hand. `keep_worktrees = false` removes the worktree at once instead. An edit that reads like an incident log (dates, PR numbers, ticket keys, session ids) is refused: a skill keeps rules, not history. A project's `CLAUDE.md`, which every session loads whole, may grow by one line per edit at most: a rule that goes in takes the place of one it covers.
 - **Checks that the move helped.** A moved lesson leaves memory but is still watched from that moment, while its PR waits too: its triggers, and the model, which sees it marked as moved, count every session that made its mistake again. 30 days after the move took effect (at once for a personal skill, at GitHub's merge time for a PR) it gets a verdict on the sessions started since then: cannot tell (another move, of lessons or of your notes, changed the same file in those weeks), did not help (the mistake came back), too little data (it did not, but it was in fewer than two sessions before either), or helped. A comeback inside the 30 days is reported at once; a move undone with `agent-reflect rollback`, or made after the run rolled back into the same file, is no longer checked.
 - **Tidies memory.** Merges lessons that say the same thing and removes ones that no longer hold, at most a quarter of the lessons per run. The model sees each lesson's numbers (repeats, sessions in 30 days, violations, reads, hook showings) and names them in its reason. For memory entries you wrote yourself it only suggests changes.
 - **Learns from repeated corrections.** Groups your corrections from the last 30 days. Three or more of one kind from at least two sessions become a lesson about how to work, at most two per project a week.
@@ -296,6 +296,11 @@ language = "auto"
 # Top-level keys go above the first [table]: TOML puts anything below it inside that table.
 cursor_sync = false
 cursor_repos = ["app"]
+
+# Keep the weekly run's worktree after it opens a PR, or when the push fails (on by default).
+# A PR's worktree goes once the PR is merged or closed, unless it holds uncommitted changes or
+# commits made after the push.
+keep_worktrees = true
 
 # Repositories whose skills (.claude/skills/*/SKILL.md, plugins/*/skills/*/SKILL.md)
 # and CLAUDE.md the weekly run may change, through draft PRs.

@@ -58,6 +58,17 @@ def test_cursor_sync_is_off_for_real_runs_and_on_in_tests(tmp_path):
     assert fields["cursor_sync"] is False  # a Config built field by field never syncs by accident
 
 
+def test_keep_worktrees_is_on_unless_the_config_turns_it_off(tmp_path):
+    # the weekly run's worktree holds the PR it opened: kept by default, for the review
+    assert load_user_settings(tmp_path / "missing.toml", tmp_path).keep_worktrees is True
+    assert Config.default(NO_FILE).keep_worktrees is True and Config.under(tmp_path).keep_worktrees is True
+    fields = {f.name: f.default for f in __import__("dataclasses").fields(Config)}
+    assert fields["keep_worktrees"] is True
+    off = _settings(tmp_path, "keep_worktrees = false\n")
+    assert load_user_settings(off, tmp_path).keep_worktrees is False
+    assert Config.default(off).keep_worktrees is False
+
+
 # -- the user's config file ----------------------------------------------------------
 
 FULL = """\
@@ -114,6 +125,7 @@ def test_default_takes_the_user_settings(tmp_path):
     ('cursor_repos = ["app"]\n', "cursor_repos names repos missing"),
     ('cursor_sync = "yes"\n', "cursor_sync"),
     ('language = "de"\n', "language must be"),
+    ('keep_worktrees = "no"\n', "keep_worktrees"),
 ])
 def test_an_unusable_config_file_is_refused_with_the_reason(tmp_path, text, says):
     with pytest.raises(ConfigError, match=says):

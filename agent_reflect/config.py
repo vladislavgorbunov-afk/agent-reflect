@@ -36,9 +36,11 @@ class UserSettings:
     cursor_sync: bool = False
     # what reports, the digest, notifications and CLI output speak: "auto" is the system's language
     language: str = "auto"
+    # the weekly run's worktree stays after it opens a PR (or fails to): see Config.keep_worktrees
+    keep_worktrees: bool = True
 
 
-_USER_KEYS = {"repos", "upstream", "cursor_repos", "cursor_sync", "language"}
+_USER_KEYS = {"repos", "upstream", "cursor_repos", "cursor_sync", "language", "keep_worktrees"}
 
 
 def user_config_path(home: Path) -> Path:
@@ -96,8 +98,12 @@ def load_user_settings(path: Path, home: Path) -> UserSettings:
     language = data.get("language", "auto")
     if language != "auto" and language not in i18n.LANGUAGES:
         raise ConfigError(f"{path}: language must be auto or one of {', '.join(i18n.LANGUAGES)}")
+    keep_worktrees = data.get("keep_worktrees", True)
+    if not isinstance(keep_worktrees, bool):
+        raise ConfigError(f"{path}: keep_worktrees must be true or false")
     return UserSettings(repos=repos, upstream_sources=tuple(upstream),
-                        cursor_repos=frozenset(cursor_repos), cursor_sync=cursor_sync, language=language)
+                        cursor_repos=frozenset(cursor_repos), cursor_sync=cursor_sync, language=language,
+                        keep_worktrees=keep_worktrees)
 
 
 # Scratch places a session may run in; a repository there is never a project.
@@ -148,6 +154,11 @@ class Config:
     cursor_sync: bool = False
     # resolved: one of i18n.LANGUAGES, never "auto"
     language: str = i18n.DEFAULT
+    # the weekly run's worktree holds what it applied: the PR's checkout, or edits a failed publish
+    # left behind. On, it stays: a PR's goes once the PR is merged or closed and nobody worked in it
+    # since, an unpublished one is replaced by the next run. Off, it is removed at once. A worktree
+    # the run applied nothing in goes either way: it holds nothing.
+    keep_worktrees: bool = True
 
     @property
     def home(self) -> Path:
@@ -243,6 +254,7 @@ class Config:
             cursor_repos=user.cursor_repos,
             cursor_sync=user.cursor_sync,
             language=i18n.resolve(user.language),
+            keep_worktrees=user.keep_worktrees,
         )
 
     @classmethod

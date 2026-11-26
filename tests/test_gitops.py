@@ -130,7 +130,12 @@ def test_worktree_commit_push_against_local_bare_remote(tmp_path):
     assert _git(clone, "status", "--porcelain") == status_before
 
     (wt / "a.md").write_text("two\n")
-    gitops.commit_and_push(wt, ["a.md"], "docs: change", "docs/agent-reflect-2026-10-20")
+    sha = gitops.commit_and_push(wt, ["a.md"], "docs: change", "docs/agent-reflect-2026-10-20")
+    assert sha == _git(bare, "rev-parse", "docs/agent-reflect-2026-10-20").strip()
+    assert gitops.commits_since(wt, sha) == 0
+    (wt / "a.md").write_text("three\n")
+    _git(wt, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-qam", "review fix, not pushed")
+    assert gitops.commits_since(wt, sha) == 1
 
     assert "docs/agent-reflect-2026-10-20" in _git(bare, "branch", "--list")
     assert _git(bare, "show", "docs/agent-reflect-2026-10-20:a.md") == "two\n"
@@ -147,6 +152,30 @@ def test_worktree_commit_push_against_local_bare_remote(tmp_path):
     assert str(wt) not in _git(clone, "worktree", "list")
 
 
+def test_prune_worktrees_drops_records_of_gone_folders(tmp_path):
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    gitops.prune_worktrees(tmp_path, run=run)
+    assert seen == [["git", "-C", str(tmp_path), "worktree", "prune"]]
+
+
+def test_remove_worktree_forces_only_when_asked(tmp_path):
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    gitops.remove_worktree(tmp_path, tmp_path / "w", run=run)
+    gitops.remove_worktree(tmp_path, tmp_path / "w", run=run, force=False)
+    assert ["--force" in argv for argv in seen] == [True, False]
+    assert all(argv[-1] == str(tmp_path / "w") for argv in seen)
+
+
 def test_commit_and_push_command_sequence(tmp_path):
     run = FakeRun()
     gitops.commit_and_push(tmp_path, ["a.md", "b.md"], "msg", "br", run=run)
@@ -154,5 +183,6 @@ def test_commit_and_push_command_sequence(tmp_path):
     assert argvs == [
         ["git", "-C", str(tmp_path), "add", "--", "a.md", "b.md"],
         ["git", "-C", str(tmp_path), "commit", "-m", "msg"],
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
         ["git", "-C", str(tmp_path), "push", "-u", "origin", "br"],
     ]
