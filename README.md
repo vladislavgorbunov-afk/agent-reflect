@@ -4,6 +4,9 @@ agent-reflect reads your Claude Code session transcripts every night, finds the 
 
 It runs locally on macOS under launchd and calls the model through your own `claude` CLI. Nothing is sent anywhere else.
 
+> [!IMPORTANT]
+> **agent-reflect keeps worktrees by default.** The weekly run opens each draft PR from a worktree of its own under `state/worktrees/`, and that worktree stays until a later weekly run sees the PR merged or closed. Only then is it removed, and not even then if it holds uncommitted changes or commits made after the push. Edits a failed push left behind stay in their worktree until the next weekly run rebuilds them and replaces it. To remove each worktree as soon as its PR is open, set `keep_worktrees = false` (see [Configuration](#configuration)).
+
 ## Why
 
 An agent that got something wrong yesterday does not remember it today. You correct it, it agrees, and a week later a new session makes the same mistake: the flag that does not exist on macOS, the test run on the device you said not to touch, "done" before anything was checked. Claude Code has memory files and skills for exactly this, but someone has to write the lesson down, keep it short, and notice when it stops working.
